@@ -18,7 +18,7 @@ from ..services.reports import (
     outstanding_amount_for_transaction,
 )
 from ..states import MarkPaidStates
-from .common import get_user_by_telegram_id, parse_positive_decimal
+from .common import get_user_by_telegram_id, parse_positive_decimal, render_pre_table, short_text
 
 router = Router(name=__name__)
 
@@ -86,15 +86,34 @@ async def mark_paid_select_person(
     rows = [
         (
             item.transaction_id,
-            f"ID {item.transaction_id} | {item.txn_date.isoformat()} | {item.merchant} | "
-            f"Owes {format_inr(item.pending_amount)} | Cashback {format_inr(item.cashback_amount)} | "
-            f"Total {format_inr(item.final_amount)}",
+            f"ID {item.transaction_id} | Owes {format_inr(item.pending_amount)}",
         )
         for item in pending_txns
     ]
 
+    table_rows: list[list[str]] = []
+    for item in pending_txns:
+        table_rows.append(
+            [
+                str(item.transaction_id),
+                item.txn_date.isoformat(),
+                short_text(item.card_label, 14),
+                short_text(item.merchant, 14),
+                format_inr(item.final_amount),
+                format_inr(item.cashback_amount),
+                format_inr(item.recoverable_amount),
+                format_inr(item.pending_amount),
+            ]
+        )
+    table = render_pre_table(
+        headers=["ID", "Date", "Card", "Merchant", "Total", "Cashbk", "Owes", "Pending"],
+        rows=table_rows,
+        right_align_cols={0, 4, 5, 6, 7},
+    )
+
     await state.update_data(person_id=person_id)
     await state.set_state(MarkPaidStates.transaction)
+    await callback.message.answer(f"Pending transactions:\n{table}")
     await callback.message.answer("Select pending transaction:", reply_markup=transactions_keyboard(rows))
 
 

@@ -20,7 +20,7 @@ from ..services.reports import (
     list_people_pending_summary,
 )
 from ..states import MonthlyReportStates
-from .common import card_label, get_user_by_telegram_id
+from .common import card_label, get_user_by_telegram_id, render_pre_table, short_text
 
 router = Router(name=__name__)
 
@@ -115,19 +115,34 @@ async def card_summary_selected(
         f"Total cashback: {format_inr(summary.total_cashback)}",
         f"Pending receivables on this card: {format_inr(summary.pending_receivables)}",
         f"Upcoming due date: {summary.upcoming_due_date.isoformat()}",
-        "",
-        "Recent 5 transactions:",
     ]
 
     if not summary.recent_transactions:
-        lines.append("- No transactions in this cycle.")
+        lines.append("Recent 5 transactions: none in this cycle.")
     else:
+        rows: list[list[str]] = []
         for item in summary.recent_transactions:
-            lines.append(
-                f"- ID {item.transaction_id} | {item.txn_date.isoformat()} | {item.merchant} | "
-                f"Total {format_inr(item.final_amount)} | Cashback {format_inr(item.cashback_amount)} | "
-                f"Owes {format_inr(item.recoverable_amount)} | Pending {format_inr(item.pending_amount)}"
+            rows.append(
+                [
+                    str(item.transaction_id),
+                    item.txn_date.isoformat(),
+                    short_text(item.card_label, 14),
+                    short_text(item.merchant, 14),
+                    format_inr(item.final_amount),
+                    format_inr(item.cashback_amount),
+                    format_inr(item.recoverable_amount),
+                    format_inr(item.pending_amount),
+                ]
             )
+        lines.append("")
+        lines.append("Recent 5 transactions:")
+        lines.append(
+            render_pre_table(
+                headers=["ID", "Date", "Card", "Merchant", "Total", "Cashbk", "Owes", "Pending"],
+                rows=rows,
+                right_align_cols={0, 4, 5, 6, 7},
+            )
+        )
 
     await callback.message.answer("\n".join(lines))
 

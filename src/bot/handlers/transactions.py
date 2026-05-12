@@ -21,6 +21,8 @@ from .common import (
     get_user_by_telegram_id,
     parse_non_negative_decimal,
     parse_positive_decimal,
+    render_pre_table,
+    short_text,
 )
 
 router = Router(name=__name__)
@@ -391,15 +393,29 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
         await message.answer("No transactions found. Use /add_txn.")
         return
 
-    lines = ["Recent transactions:"]
+    rows: list[list[str]] = []
     for txn in txns:
         owes_amount = txn.final_amount - txn.cashback_amount
-        lines.append(
-            f"- ID {txn.transaction_id} | {txn.txn_date.isoformat()} | {txn.card_label} | "
-            f"Total {format_inr(txn.final_amount)} | Cashback {format_inr(txn.cashback_amount)} | "
-            f"Owes/Net {format_inr(owes_amount)} | {txn.merchant} | {txn.category} | {txn.reimbursement_status}"
+        rows.append(
+            [
+                str(txn.transaction_id),
+                txn.txn_date.isoformat(),
+                short_text(txn.card_label, 14),
+                format_inr(txn.final_amount),
+                format_inr(txn.cashback_amount),
+                format_inr(owes_amount),
+                short_text(txn.merchant, 14),
+                short_text(txn.category, 12),
+                txn.reimbursement_status,
+            ]
         )
-    await message.answer("\n".join(lines))
+    table = render_pre_table(
+        headers=["ID", "Date", "Card", "Total", "Cashbk", "Owes", "Merchant", "Category", "Status"],
+        rows=rows,
+        right_align_cols={0, 3, 4, 5},
+    )
+    await message.answer("Recent transactions:")
+    await message.answer(table)
 
 
 @router.message(Command("delete_txn"))
@@ -419,15 +435,29 @@ async def delete_txn_command(message: Message, state: FSMContext, session_maker:
         await message.answer("No transactions to delete.")
         return
 
-    lines = ["Recent transactions:"]
+    rows: list[list[str]] = []
     for txn in recent:
-        lines.append(f"- ID {txn.transaction_id}: {txn.txn_date.isoformat()} {txn.card_label} {format_inr(txn.final_amount)}")
+        owes_amount = txn.final_amount - txn.cashback_amount
+        rows.append(
+            [
+                str(txn.transaction_id),
+                txn.txn_date.isoformat(),
+                short_text(txn.card_label, 14),
+                format_inr(txn.final_amount),
+                format_inr(txn.cashback_amount),
+                format_inr(owes_amount),
+            ]
+        )
 
     await state.clear()
     await state.set_state(DeleteTransactionStates.transaction_id)
     await state.update_data(user_id=user.id)
-    lines.append("\nEnter transaction ID to delete:")
-    await message.answer("\n".join(lines))
+    table = render_pre_table(
+        headers=["ID", "Date", "Card", "Total", "Cashbk", "Owes"],
+        rows=rows,
+        right_align_cols={0, 3, 4, 5},
+    )
+    await message.answer(f"Recent transactions:\n{table}\n\nEnter transaction ID to delete:")
 
 
 @router.message(DeleteTransactionStates.transaction_id)

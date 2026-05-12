@@ -127,7 +127,7 @@ async def list_recent_transactions(
     limit: int = 10,
 ) -> list[RecentTransactionRow]:
     query = (
-        select(Transaction, Card.bank_name, Card.card_name, Card.last_four)
+        select(Transaction, Card.card_name)
         .join(Card, Transaction.card_id == Card.id)
         .where(Transaction.user_id == user_id)
         .order_by(Transaction.txn_date.desc(), Transaction.id.desc())
@@ -135,8 +135,8 @@ async def list_recent_transactions(
     )
     rows = (await session.execute(query)).all()
     result: list[RecentTransactionRow] = []
-    for txn, bank_name, card_name, last_four in rows:
-        card_label = f"{bank_name}/{card_name} • ****{last_four}"
+    for txn, card_name in rows:
+        card_label = card_name
         result.append(
             RecentTransactionRow(
                 transaction_id=txn.id,
@@ -223,9 +223,7 @@ async def pending_transactions_for_person(
     query = (
         select(
             Transaction,
-            Card.bank_name,
             Card.card_name,
-            Card.last_four,
             func.coalesce(paid_subquery.c.paid_total, 0).label("paid_total"),
         )
         .join(Card, Card.id == Transaction.card_id)
@@ -240,7 +238,7 @@ async def pending_transactions_for_person(
 
     rows = (await session.execute(query)).all()
     items: list[PendingTransactionItem] = []
-    for txn, bank_name, card_name, last_four, paid_total in rows:
+    for txn, card_name, paid_total in rows:
         paid_amount = _to_decimal(paid_total)
         recoverable_amount = max(ZERO, _to_decimal(txn.final_amount) - _to_decimal(txn.cashback_amount))
         pending_amount = max(ZERO, recoverable_amount - paid_amount)
@@ -249,7 +247,7 @@ async def pending_transactions_for_person(
         items.append(
             PendingTransactionItem(
                 transaction_id=txn.id,
-                card_label=f"{bank_name}/{card_name} • ****{last_four}",
+                card_label=card_name,
                 txn_date=txn.txn_date,
                 merchant=txn.merchant or "-",
                 final_amount=_to_decimal(txn.final_amount),
@@ -339,7 +337,7 @@ async def get_card_summary_data(
             recent_transactions.append(
                 PendingTransactionItem(
                     transaction_id=txn.id,
-                    card_label=f"{card.bank_name}/{card.card_name} • ****{card.last_four}",
+                    card_label=card.card_name,
                     txn_date=txn.txn_date,
                     merchant=txn.merchant or "-",
                     final_amount=_to_decimal(txn.final_amount),
@@ -351,7 +349,7 @@ async def get_card_summary_data(
             )
 
     return CardSummaryData(
-        card_label=f"{card.bank_name}/{card.card_name} • ****{card.last_four}",
+        card_label=card.card_name,
         cycle_start=cycle_start,
         cycle_end=cycle_end,
         total_spend=total_spend,
@@ -435,9 +433,7 @@ async def get_monthly_report_data(
 
     card_query = (
         select(
-            Card.bank_name,
             Card.card_name,
-            Card.last_four,
             func.coalesce(func.sum(Transaction.final_amount), 0),
             func.coalesce(func.sum(Transaction.discount_amount), 0),
             func.coalesce(func.sum(Transaction.cashback_amount), 0),
@@ -453,12 +449,12 @@ async def get_monthly_report_data(
     )
 
     card_breakdown: list[CardBreakdownItem] = []
-    for bank_name, card_name, last_four, billed_total, discount_total, cashback_total in (await session.execute(card_query)).all():
+    for card_name, billed_total, discount_total, cashback_total in (await session.execute(card_query)).all():
         billed_decimal = _to_decimal(billed_total)
         cashback_decimal = _to_decimal(cashback_total)
         card_breakdown.append(
             CardBreakdownItem(
-                card_label=f"{bank_name}/{card_name} • ****{last_four}",
+                card_label=card_name,
                 total_billed=billed_decimal,
                 total_discount=_to_decimal(discount_total),
                 total_cashback=cashback_decimal,
