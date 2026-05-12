@@ -92,6 +92,7 @@ class Transaction(Base):
     card_id: Mapped[int] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
+    cashback_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     final_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     merchant: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)

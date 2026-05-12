@@ -19,6 +19,8 @@ class PersonPendingSummary:
     person_id: int
     person_name: str
     pending_amount: Decimal
+    cashback_amount: Decimal
+    total_amount: Decimal
     transaction_count: int
 
 
@@ -29,6 +31,8 @@ class PendingTransactionItem:
     txn_date: date
     merchant: str
     final_amount: Decimal
+    cashback_amount: Decimal
+    recoverable_amount: Decimal
     paid_amount: Decimal
     pending_amount: Decimal
 
@@ -40,6 +44,7 @@ class CardSummaryData:
     cycle_end: date
     total_spend: Decimal
     total_discounts: Decimal
+    total_cashback: Decimal
     pending_receivables: Decimal
     upcoming_due_date: date
     recent_transactions: list[PendingTransactionItem]
@@ -48,9 +53,10 @@ class CardSummaryData:
 @dataclass(slots=True)
 class CardBreakdownItem:
     card_label: str
-    total_amount: Decimal
+    total_billed: Decimal
     total_discount: Decimal
-    net_amount: Decimal
+    total_cashback: Decimal
+    effective_net: Decimal
 
 
 @dataclass(slots=True)
@@ -59,6 +65,7 @@ class MonthlyReportData:
     month_end: date
     total_spent: Decimal
     total_discounts: Decimal
+    total_cashback: Decimal
     net_payable: Decimal
     amount_owed_by_others: Decimal
     top_categories: list[tuple[str, Decimal]]
@@ -72,6 +79,7 @@ class RecentTransactionRow:
     txn_date: date
     amount: Decimal
     discount_amount: Decimal
+    cashback_amount: Decimal
     final_amount: Decimal
     merchant: str
     category: str
@@ -136,6 +144,7 @@ async def list_recent_transactions(
                 txn_date=txn.txn_date,
                 amount=txn.amount,
                 discount_amount=txn.discount_amount,
+                cashback_amount=txn.cashback_amount,
                 final_amount=txn.final_amount,
                 merchant=txn.merchant or "-",
                 category=txn.category or "-",
@@ -156,13 +165,16 @@ async def list_people_pending_summary(session: AsyncSession, user_id: int) -> li
         .subquery()
     )
 
-    outstanding_expr = Transaction.final_amount - func.coalesce(paid_subquery.c.paid_total, 0)
+    recoverable_expr = Transaction.final_amount - Transaction.cashback_amount
+    outstanding_expr = recoverable_expr - func.coalesce(paid_subquery.c.paid_total, 0)
+    open_cashback_expr = case((outstanding_expr > 0, Transaction.cashback_amount), else_=0)
     query = (
         select(
             Person.id,
             Person.name,
             func.sum(case((outstanding_expr > 0, 1), else_=0)),
             func.coalesce(func.sum(outstanding_expr), 0),
+            func.coalesce(func.sum(open_cashback_expr), 0),
         )
         .join(
             Transaction,
@@ -186,8 +198,10 @@ async def list_people_pending_summary(session: AsyncSession, user_id: int) -> li
             person_name=name,
             transaction_count=int(count or 0),
             pending_amount=_to_decimal(total_pending),
+            cashback_amount=_to_decimal(total_cashback),
+            total_amount=_to_decimal(total_pending) + _to_decimal(total_cashback),
         )
-        for person_id, name, count, total_pending in rows
+        for person_id, name, count, total_pending, total_cashback in rows
     ]
 
 
@@ -228,7 +242,8 @@ async def pending_transactions_for_person(
     items: list[PendingTransactionItem] = []
     for txn, bank_name, card_name, last_four, paid_total in rows:
         paid_amount = _to_decimal(paid_total)
-        pending_amount = max(ZERO, _to_decimal(txn.final_amount) - paid_amount)
+        recoverable_amount = max(ZERO, _to_decimal(txn.final_amount) - _to_decimal(txn.cashback_amount))
+        pending_amount = max(ZERO, recoverable_amount - paid_amount)
         if pending_amount <= ZERO:
             continue
         items.append(
@@ -238,6 +253,8 @@ async def pending_transactions_for_person(
                 txn_date=txn.txn_date,
                 merchant=txn.merchant or "-",
                 final_amount=_to_decimal(txn.final_amount),
+                cashback_amount=_to_decimal(txn.cashback_amount),
+                recoverable_amount=recoverable_amount,
                 paid_amount=paid_amount,
                 pending_amount=pending_amount,
             )
@@ -257,7 +274,8 @@ async def outstanding_amount_for_transaction(session: AsyncSession, user_id: int
     )
     if not txn:
         return ZERO
-    return max(ZERO, _to_decimal(txn.final_amount) - paid_total)
+    recoverable_amount = max(ZERO, _to_decimal(txn.final_amount) - _to_decimal(txn.cashback_amount))
+    return max(ZERO, recoverable_amount - paid_total)
 
 
 async def get_card_summary_data(
@@ -301,15 +319,18 @@ async def get_card_summary_data(
 
     total_spend = ZERO
     total_discounts = ZERO
+    total_cashback = ZERO
     pending_receivables = ZERO
     recent_transactions: list[PendingTransactionItem] = []
 
     for idx, (txn, paid_total) in enumerate(cycle_rows):
         total_spend += _to_decimal(txn.final_amount)
         total_discounts += _to_decimal(txn.discount_amount)
+        total_cashback += _to_decimal(txn.cashback_amount)
 
         paid_amount = _to_decimal(paid_total)
-        pending_amount = max(ZERO, _to_decimal(txn.final_amount) - paid_amount)
+        recoverable_amount = max(ZERO, _to_decimal(txn.final_amount) - _to_decimal(txn.cashback_amount))
+        pending_amount = max(ZERO, recoverable_amount - paid_amount)
 
         if txn.is_for_someone_else and pending_amount > ZERO:
             pending_receivables += pending_amount
@@ -322,6 +343,8 @@ async def get_card_summary_data(
                     txn_date=txn.txn_date,
                     merchant=txn.merchant or "-",
                     final_amount=_to_decimal(txn.final_amount),
+                    cashback_amount=_to_decimal(txn.cashback_amount),
+                    recoverable_amount=recoverable_amount,
                     paid_amount=paid_amount,
                     pending_amount=pending_amount,
                 )
@@ -333,6 +356,7 @@ async def get_card_summary_data(
         cycle_end=cycle_end,
         total_spend=total_spend,
         total_discounts=total_discounts,
+        total_cashback=total_cashback,
         pending_receivables=pending_receivables,
         upcoming_due_date=upcoming_due_date,
         recent_transactions=recent_transactions,
@@ -370,21 +394,24 @@ async def get_monthly_report_data(
 
     total_spent = ZERO
     total_discounts = ZERO
+    total_cashback = ZERO
     net_payable = ZERO
     amount_owed_by_others = ZERO
 
     for txn, paid_total in txn_rows:
-        amount = _to_decimal(txn.amount)
         discount = _to_decimal(txn.discount_amount)
+        cashback = _to_decimal(txn.cashback_amount)
         final_amount = _to_decimal(txn.final_amount)
         paid_amount = _to_decimal(paid_total)
 
-        total_spent += amount
+        total_spent += final_amount
         total_discounts += discount
-        net_payable += final_amount
+        total_cashback += cashback
+        net_payable += max(ZERO, final_amount - cashback)
 
         if txn.is_for_someone_else:
-            outstanding = max(ZERO, final_amount - paid_amount)
+            recoverable_amount = max(ZERO, final_amount - cashback)
+            outstanding = max(ZERO, recoverable_amount - paid_amount)
             amount_owed_by_others += outstanding
 
     category_query = (
@@ -411,9 +438,9 @@ async def get_monthly_report_data(
             Card.bank_name,
             Card.card_name,
             Card.last_four,
-            func.coalesce(func.sum(Transaction.amount), 0),
-            func.coalesce(func.sum(Transaction.discount_amount), 0),
             func.coalesce(func.sum(Transaction.final_amount), 0),
+            func.coalesce(func.sum(Transaction.discount_amount), 0),
+            func.coalesce(func.sum(Transaction.cashback_amount), 0),
         )
         .join(Card, Card.id == Transaction.card_id)
         .where(
@@ -426,13 +453,16 @@ async def get_monthly_report_data(
     )
 
     card_breakdown: list[CardBreakdownItem] = []
-    for bank_name, card_name, last_four, amount_total, discount_total, net_total in (await session.execute(card_query)).all():
+    for bank_name, card_name, last_four, billed_total, discount_total, cashback_total in (await session.execute(card_query)).all():
+        billed_decimal = _to_decimal(billed_total)
+        cashback_decimal = _to_decimal(cashback_total)
         card_breakdown.append(
             CardBreakdownItem(
                 card_label=f"{bank_name}/{card_name} • ****{last_four}",
-                total_amount=_to_decimal(amount_total),
+                total_billed=billed_decimal,
                 total_discount=_to_decimal(discount_total),
-                net_amount=_to_decimal(net_total),
+                total_cashback=cashback_decimal,
+                effective_net=max(ZERO, billed_decimal - cashback_decimal),
             )
         )
 
@@ -441,6 +471,7 @@ async def get_monthly_report_data(
         month_end=month_end,
         total_spent=total_spent,
         total_discounts=total_discounts,
+        total_cashback=total_cashback,
         net_payable=net_payable,
         amount_owed_by_others=amount_owed_by_others,
         top_categories=top_categories,

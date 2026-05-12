@@ -141,7 +141,7 @@ async def add_txn_skip_date(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.update_data(txn_date=date.today().isoformat())
     await state.set_state(AddTransactionStates.has_discount)
-    await callback.message.answer("Any discount/cashback?", reply_markup=yes_no_keyboard("txn_discount"))
+    await callback.message.answer("Any discount?", reply_markup=yes_no_keyboard("txn_discount"))
 
 
 @router.message(AddTransactionStates.txn_date)
@@ -158,7 +158,7 @@ async def add_txn_date(message: Message, state: FSMContext) -> None:
 
     await state.update_data(txn_date=txn_date.isoformat())
     await state.set_state(AddTransactionStates.has_discount)
-    await message.answer("Any discount/cashback?", reply_markup=yes_no_keyboard("txn_discount"))
+    await message.answer("Any discount?", reply_markup=yes_no_keyboard("txn_discount"))
 
 
 @router.callback_query(AddTransactionStates.has_discount, F.data.startswith("txn_discount:"))
@@ -175,8 +175,8 @@ async def add_txn_has_discount(callback: CallbackQuery, state: FSMContext) -> No
         return
 
     await state.update_data(discount_amount="0")
-    await state.set_state(AddTransactionStates.ownership)
-    await callback.message.answer("Is this purchase for someone else?", reply_markup=yes_no_keyboard("txn_someone"))
+    await state.set_state(AddTransactionStates.has_cashback)
+    await callback.message.answer("Any cashback?", reply_markup=yes_no_keyboard("txn_cashback"))
 
 
 @router.message(AddTransactionStates.discount_amount)
@@ -193,6 +193,47 @@ async def add_txn_discount_amount(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(discount_amount=str(discount))
+    await state.set_state(AddTransactionStates.has_cashback)
+    await message.answer("Any cashback?", reply_markup=yes_no_keyboard("txn_cashback"))
+
+
+@router.callback_query(AddTransactionStates.has_cashback, F.data.startswith("txn_cashback:"))
+async def add_txn_has_cashback(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.message:
+        return
+
+    await callback.answer()
+    choice = callback.data.split(":", maxsplit=1)[1]
+
+    if choice == "yes":
+        await state.set_state(AddTransactionStates.cashback_amount)
+        await callback.message.answer("Enter cashback amount:")
+        return
+
+    await state.update_data(cashback_amount="0")
+    await state.set_state(AddTransactionStates.ownership)
+    await callback.message.answer("Is this purchase for someone else?", reply_markup=yes_no_keyboard("txn_someone"))
+
+
+@router.message(AddTransactionStates.cashback_amount)
+async def add_txn_cashback_amount(message: Message, state: FSMContext) -> None:
+    cashback = parse_non_negative_decimal(message.text or "")
+    if cashback is None:
+        await message.answer("Cashback must be a non-negative number. Enter cashback amount:")
+        return
+
+    data = await state.get_data()
+    amount = Decimal(str(data["amount"]))
+    discount = Decimal(str(data.get("discount_amount", "0")))
+    charged_total = amount - discount
+
+    if cashback > charged_total:
+        await message.answer(
+            "Cashback cannot exceed total after discount. Enter cashback amount again:"
+        )
+        return
+
+    await state.update_data(cashback_amount=str(cashback))
     await state.set_state(AddTransactionStates.ownership)
     await message.answer("Is this purchase for someone else?", reply_markup=yes_no_keyboard("txn_someone"))
 
@@ -265,14 +306,20 @@ async def _persist_transaction(
     data = await state.get_data()
     amount = Decimal(str(data["amount"]))
     discount_amount = Decimal(str(data.get("discount_amount", "0")))
+    cashback_amount = Decimal(str(data.get("cashback_amount", "0")))
     final_amount = amount - discount_amount
 
     if final_amount < 0:
         await message.answer("Final amount cannot be negative. Please try /add_txn again.")
         await state.clear()
         return
+    if cashback_amount > final_amount:
+        await message.answer("Cashback cannot exceed total after discount. Please try /add_txn again.")
+        await state.clear()
+        return
 
     txn_date = datetime.strptime(str(data["txn_date"]), "%Y-%m-%d").date()
+    recoverable_amount = final_amount - cashback_amount
 
     async with session_maker() as session:
         person_id = None
@@ -286,6 +333,7 @@ async def _persist_transaction(
             card_id=int(data["card_id"]),
             amount=amount,
             discount_amount=discount_amount,
+            cashback_amount=cashback_amount,
             final_amount=final_amount,
             merchant=data.get("merchant"),
             category=data.get("category"),
@@ -298,13 +346,18 @@ async def _persist_transaction(
         session.add(txn)
         await session.flush()
 
-        if txn.is_for_someone_else and person_id and status == ReimbursementStatus.PAID:
+        if (
+            txn.is_for_someone_else
+            and person_id
+            and status == ReimbursementStatus.PAID
+            and recoverable_amount > 0
+        ):
             session.add(
                 Payment(
                     user_id=txn.user_id,
                     transaction_id=txn.id,
                     person_id=person_id,
-                    amount_paid=final_amount,
+                    amount_paid=recoverable_amount,
                     notes="Marked as already paid while creating transaction.",
                 )
             )
@@ -313,9 +366,11 @@ async def _persist_transaction(
     await state.clear()
     await message.answer(
         "Transaction saved.\n"
-        f"Amount: {format_inr(amount)}\n"
+        f"Total: {format_inr(final_amount)}\n"
+        f"Amount entered: {format_inr(amount)}\n"
         f"Discount: {format_inr(discount_amount)}\n"
-        f"Final: {format_inr(final_amount)}"
+        f"Cashback: {format_inr(cashback_amount)}\n"
+        f"Owes/Net after cashback: {format_inr(recoverable_amount)}"
     )
 
 
@@ -338,9 +393,11 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
 
     lines = ["Recent transactions:"]
     for txn in txns:
+        owes_amount = txn.final_amount - txn.cashback_amount
         lines.append(
             f"- ID {txn.transaction_id} | {txn.txn_date.isoformat()} | {txn.card_label} | "
-            f"{format_inr(txn.final_amount)} | {txn.merchant} | {txn.category} | {txn.reimbursement_status}"
+            f"Total {format_inr(txn.final_amount)} | Cashback {format_inr(txn.cashback_amount)} | "
+            f"Owes/Net {format_inr(owes_amount)} | {txn.merchant} | {txn.category} | {txn.reimbursement_status}"
         )
     await message.answer("\n".join(lines))
 

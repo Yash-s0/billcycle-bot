@@ -2,7 +2,7 @@
 
 BillCycle Bot is a Telegram bot for tracking:
 - credit cards (safe metadata only)
-- transactions and discounts/cashback
+- transactions with separate discount and cashback tracking
 - billing cycles and upcoming due dates
 - purchases made for other people
 - reimbursements, including partial payments
@@ -69,6 +69,12 @@ Note: The app also tries to run `alembic upgrade head` on startup, and falls bac
 - `/monthly_report` - Month-wise report
 - `/delete_txn` - Delete your transaction with confirmation
 - `/settings` - Basic bot settings info
+
+`/add_txn` behavior notes:
+- asks discount and cashback as separate inputs
+- stores both in DB (`discount_amount`, `cashback_amount`)
+- uses `total = amount - discount`
+- uses `owes = total - cashback` for reimbursements
 
 ## Reminder behavior
 A daily scheduler runs at `09:00` in `TIMEZONE` and sends reminders for:

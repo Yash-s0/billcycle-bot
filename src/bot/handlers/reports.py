@@ -45,7 +45,8 @@ async def who_owes_me_command(message: Message, session_maker: async_sessionmake
     lines = ["Pending receivables:"]
     for item in summary:
         lines.append(
-            f"- {item.person_name}: {format_inr(item.pending_amount)} "
+            f"- {item.person_name}: Owes {format_inr(item.pending_amount)} | "
+            f"Cashback {format_inr(item.cashback_amount)} | Total {format_inr(item.total_amount)} "
             f"across {item.transaction_count} transaction(s)"
         )
     await message.answer("\n".join(lines))
@@ -109,8 +110,9 @@ async def card_summary_selected(
     lines = [
         f"Card summary: {summary.card_label}",
         f"Cycle: {summary.cycle_start.isoformat()} to {summary.cycle_end.isoformat()}",
-        f"Current cycle spend: {format_inr(summary.total_spend)}",
+        f"Current cycle total billed: {format_inr(summary.total_spend)}",
         f"Total discounts: {format_inr(summary.total_discounts)}",
+        f"Total cashback: {format_inr(summary.total_cashback)}",
         f"Pending receivables on this card: {format_inr(summary.pending_receivables)}",
         f"Upcoming due date: {summary.upcoming_due_date.isoformat()}",
         "",
@@ -123,7 +125,8 @@ async def card_summary_selected(
         for item in summary.recent_transactions:
             lines.append(
                 f"- ID {item.transaction_id} | {item.txn_date.isoformat()} | {item.merchant} | "
-                f"{format_inr(item.final_amount)} | Pending {format_inr(item.pending_amount)}"
+                f"Total {format_inr(item.final_amount)} | Cashback {format_inr(item.cashback_amount)} | "
+                f"Owes {format_inr(item.recoverable_amount)} | Pending {format_inr(item.pending_amount)}"
             )
 
     await callback.message.answer("\n".join(lines))
@@ -218,9 +221,10 @@ async def _send_monthly_report(
     lines = [
         f"Monthly report: {report.month_start.strftime('%b %Y')}",
         f"Period: {report.month_start.isoformat()} to {report.month_end.isoformat()}",
-        f"Total spent: {format_inr(report.total_spent)}",
+        f"Total billed: {format_inr(report.total_spent)}",
         f"Total discounts: {format_inr(report.total_discounts)}",
-        f"Net payable: {format_inr(report.net_payable)}",
+        f"Total cashback: {format_inr(report.total_cashback)}",
+        f"Net after cashback: {format_inr(report.net_payable)}",
         f"Amount owed by others: {format_inr(report.amount_owed_by_others)}",
         "",
         "Top categories:",
@@ -238,8 +242,9 @@ async def _send_monthly_report(
     if report.card_breakdown:
         for item in report.card_breakdown:
             lines.append(
-                f"- {item.card_label}: Spent {format_inr(item.total_amount)}, "
-                f"Discount {format_inr(item.total_discount)}, Net {format_inr(item.net_amount)}"
+                f"- {item.card_label}: Total {format_inr(item.total_billed)}, "
+                f"Discount {format_inr(item.total_discount)}, Cashback {format_inr(item.total_cashback)}, "
+                f"Net {format_inr(item.effective_net)}"
             )
     else:
         lines.append("- No transactions")

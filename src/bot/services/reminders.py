@@ -35,7 +35,8 @@ async def _pending_older_than_days(
     )
 
     cutoff_date = today - timedelta(days=older_than_days)
-    outstanding_expr = Transaction.final_amount - func.coalesce(paid_subquery.c.paid_total, 0)
+    recoverable_expr = Transaction.final_amount - Transaction.cashback_amount
+    outstanding_expr = recoverable_expr - func.coalesce(paid_subquery.c.paid_total, 0)
 
     query = (
         select(

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -10,6 +13,12 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from src.bot.models import Base
 
 config = context.config
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env")
+
+database_url = os.getenv("DATABASE_URL", "").strip()
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

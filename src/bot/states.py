@@ -19,6 +19,8 @@ class AddTransactionStates(StatesGroup):
     txn_date = State()
     has_discount = State()
     discount_amount = State()
+    has_cashback = State()
+    cashback_amount = State()
     ownership = State()
     person_name = State()
     already_paid = State()

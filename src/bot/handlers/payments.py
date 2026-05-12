@@ -45,7 +45,12 @@ async def mark_paid_command(
         return
 
     rows = [
-        (item.person_id, f"{item.person_name} • {format_inr(item.pending_amount)} ({item.transaction_count} txns)")
+        (
+            item.person_id,
+            f"{item.person_name} • Owes {format_inr(item.pending_amount)} | "
+            f"Cashback {format_inr(item.cashback_amount)} | Total {format_inr(item.total_amount)} "
+            f"({item.transaction_count} txns)",
+        )
         for item in people_summary
     ]
 
@@ -82,7 +87,8 @@ async def mark_paid_select_person(
         (
             item.transaction_id,
             f"ID {item.transaction_id} | {item.txn_date.isoformat()} | {item.merchant} | "
-            f"Pending {format_inr(item.pending_amount)}",
+            f"Owes {format_inr(item.pending_amount)} | Cashback {format_inr(item.cashback_amount)} | "
+            f"Total {format_inr(item.final_amount)}",
         )
         for item in pending_txns
     ]
@@ -202,7 +208,11 @@ async def _save_payment(
             or Decimal("0")
         )
 
-        outstanding = max(Decimal("0"), Decimal(str(txn.final_amount)) - Decimal(str(existing_paid)))
+        recoverable_amount = max(
+            Decimal("0"),
+            Decimal(str(txn.final_amount)) - Decimal(str(txn.cashback_amount)),
+        )
+        outstanding = max(Decimal("0"), recoverable_amount - Decimal(str(existing_paid)))
         if amount_paid > outstanding:
             await state.clear()
             await message.answer(
