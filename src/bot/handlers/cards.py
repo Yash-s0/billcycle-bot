@@ -9,9 +9,15 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..keyboards import skip_keyboard
+from ..keyboards import (
+    cards_keyboard,
+    edit_action_keyboard,
+    edit_card_fields_keyboard,
+    edit_confirm_delete_keyboard,
+    skip_keyboard,
+)
 from ..models import Card
-from ..states import AddCardStates
+from ..states import AddCardStates, EditCardStates
 from .common import ensure_user, get_user_by_telegram_id
 
 router = Router(name=__name__)
@@ -172,7 +178,7 @@ async def _save_card(
 
 
 @router.message(Command("list_cards"))
-async def list_cards_command(message: Message, session_maker: async_sessionmaker[AsyncSession]) -> None:
+async def manage_cards_command(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
     if not message.from_user:
         return
 
@@ -194,10 +200,183 @@ async def list_cards_command(message: Message, session_maker: async_sessionmaker
         await message.answer("You have no cards yet. Use /add_card.")
         return
 
-    lines = ["Your cards:"]
-    for card in cards:
-        lines.append(
-            f"- ID {card.id}: {card.bank_name}/{card.card_name} "
-            f"(Billing {card.billing_day}, Due {card.due_day})"
+    rows = [(card.id, f"{card.card_name} | {card.bank_name}") for card in cards]
+    await state.clear()
+    await state.set_state(EditCardStates.card)
+    await state.update_data(user_id=user.id)
+    await message.answer("Select a card to manage:", reply_markup=cards_keyboard(rows))
+
+
+@router.callback_query(EditCardStates.card, F.data.startswith("card:"))
+async def edit_card_select(callback: CallbackQuery, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+
+    card_id = int(callback.data.split(":", maxsplit=1)[1])
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+
+    async with session_maker() as session:
+        card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
+    if not card:
+        await callback.message.answer("Card not found.")
+        await state.clear()
+        return
+
+    await state.update_data(edit_card_id=card.id)
+    await state.set_state(EditCardStates.action)
+    await callback.message.answer(
+        _format_card_summary(card),
+        reply_markup=edit_action_keyboard("edit_card_action"),
+    )
+
+
+@router.callback_query(EditCardStates.action, F.data.startswith("edit_card_action:"))
+async def edit_card_action(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+    action = callback.data.split(":", maxsplit=1)[1]
+
+    if action == "cancel":
+        await state.clear()
+        await callback.message.answer("Edit card cancelled.")
+        return
+    if action == "delete":
+        await state.set_state(EditCardStates.confirm_delete)
+        await callback.message.answer(
+            "Delete this card?\nThis will also delete transactions linked to this card.",
+            reply_markup=edit_confirm_delete_keyboard("edit_card_delete"),
         )
-    await message.answer("\n".join(lines))
+        return
+
+    await state.set_state(EditCardStates.field)
+    await callback.message.answer("Choose what to update:", reply_markup=edit_card_fields_keyboard())
+
+
+@router.callback_query(EditCardStates.confirm_delete, F.data.startswith("edit_card_delete:"))
+async def edit_card_delete_confirm(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+    choice = callback.data.split(":", maxsplit=1)[1]
+    if choice == "no":
+        await state.set_state(EditCardStates.action)
+        await callback.message.answer("Delete cancelled.", reply_markup=edit_action_keyboard("edit_card_action"))
+        return
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+    card_id = int(data["edit_card_id"])
+    async with session_maker() as session:
+        card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
+        if not card:
+            await state.clear()
+            await callback.message.answer("Card not found. Nothing deleted.")
+            return
+        await session.delete(card)
+        await session.commit()
+
+    await state.clear()
+    await callback.message.answer(f"Deleted card ID {card_id}.")
+
+
+@router.callback_query(EditCardStates.field, F.data.startswith("edit_card_field:"))
+async def edit_card_field_select(callback: CallbackQuery, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+    field = callback.data.split(":", maxsplit=1)[1]
+
+    if field == "back":
+        await state.set_state(EditCardStates.action)
+        await callback.message.answer("Back to actions.", reply_markup=edit_action_keyboard("edit_card_action"))
+        return
+
+    await state.update_data(edit_card_pending_field=field)
+    await state.set_state(EditCardStates.input_value)
+    await callback.message.answer(_card_field_prompt(field))
+
+
+@router.message(EditCardStates.input_value)
+async def edit_card_field_input(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    data = await state.get_data()
+    field = str(data.get("edit_card_pending_field") or "")
+    user_id = int(data["user_id"])
+    card_id = int(data["edit_card_id"])
+    raw = (message.text or "").strip()
+    raw_lower = raw.lower()
+
+    update_value: object
+    if field in {"bank_name", "card_name"}:
+        if not raw:
+            await message.answer("Value cannot be empty. Enter again:")
+            return
+        update_value = raw
+    elif field in {"billing_day", "due_day"}:
+        day = _parse_day(raw)
+        if day is None:
+            await message.answer("Day must be between 1 and 31. Enter again:")
+            return
+        update_value = day
+    elif field == "credit_limit":
+        if raw_lower == "skip" or not raw:
+            update_value = None
+        else:
+            limit = _parse_credit_limit(raw)
+            if limit is None:
+                await message.answer("Credit limit must be numeric or 'skip'. Enter again:")
+                return
+            update_value = limit
+    elif field == "notes":
+        update_value = None if raw_lower == "skip" or not raw else raw
+    else:
+        await state.set_state(EditCardStates.field)
+        await message.answer("Unknown field. Choose again:", reply_markup=edit_card_fields_keyboard())
+        return
+
+    async with session_maker() as session:
+        card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
+        if not card:
+            await state.clear()
+            await message.answer("Card not found.")
+            return
+        setattr(card, field, update_value)
+        await session.commit()
+        await session.refresh(card)
+        summary = _format_card_summary(card)
+
+    await state.update_data(edit_card_pending_field=None)
+    await state.set_state(EditCardStates.field)
+    await message.answer("Updated.\n" + summary, reply_markup=edit_card_fields_keyboard())
+
+
+def _format_card_summary(card: Card) -> str:
+    return (
+        f"Card: {card.bank_name}/{card.card_name}\n"
+        f"Billing day: {card.billing_day}\n"
+        f"Due day: {card.due_day}\n"
+        f"Credit limit: {card.credit_limit if card.credit_limit is not None else '-'}\n"
+        f"Notes: {card.notes or '-'}"
+    )
+
+
+def _card_field_prompt(field: str) -> str:
+    if field == "bank_name":
+        return "Enter new bank name:"
+    if field == "card_name":
+        return "Enter new card nickname:"
+    if field == "billing_day":
+        return "Enter new billing day (1-31):"
+    if field == "due_day":
+        return "Enter new due day (1-31):"
+    if field == "credit_limit":
+        return "Enter new credit limit, or send 'skip' to clear:"
+    if field == "notes":
+        return "Enter new notes, or send 'skip' to clear:"
+    return "Enter value:"

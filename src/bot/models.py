@@ -36,6 +36,12 @@ class ReimbursementStatus(str, Enum):
     PAID = "paid"
 
 
+class PaymentMode(str, Enum):
+    CARD = "card"
+    UPI = "upi"
+    CASH = "cash"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -47,8 +53,26 @@ class User(Base):
 
     cards: Mapped[list["Card"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     people: Mapped[list["Person"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    transactions: Mapped[list["Transaction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    transactions: Mapped[list["Transaction"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="Transaction.user_id",
+    )
+    added_transactions: Mapped[list["Transaction"]] = relationship(
+        foreign_keys="Transaction.added_by_user_id",
+        back_populates="added_by_user",
+    )
     payments: Mapped[list["Payment"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    shared_expense_access_as_owner: Mapped[list["SharedExpenseAccess"]] = relationship(
+        foreign_keys="SharedExpenseAccess.owner_user_id",
+        back_populates="owner",
+        cascade="all, delete-orphan",
+    )
+    shared_expense_access_as_collaborator: Mapped[list["SharedExpenseAccess"]] = relationship(
+        foreign_keys="SharedExpenseAccess.collaborator_user_id",
+        back_populates="collaborator",
+        cascade="all, delete-orphan",
+    )
 
 
 class Card(Base):
@@ -88,7 +112,17 @@ class Transaction(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    card_id: Mapped[int] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
+    added_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    card_id: Mapped[Optional[int]] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), nullable=True, index=True)
+    payment_mode: Mapped[PaymentMode] = mapped_column(
+        SAEnum(
+            PaymentMode,
+            native_enum=False,
+            validate_strings=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        default=PaymentMode.CARD,
+    )
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
     cashback_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
@@ -108,10 +142,27 @@ class Transaction(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    user: Mapped[User] = relationship(back_populates="transactions")
-    card: Mapped[Card] = relationship(back_populates="transactions")
+    user: Mapped[User] = relationship(back_populates="transactions", foreign_keys=[user_id])
+    added_by_user: Mapped[User] = relationship(back_populates="added_transactions", foreign_keys=[added_by_user_id])
+    card: Mapped[Optional[Card]] = relationship(back_populates="transactions")
     person: Mapped[Optional[Person]] = relationship(back_populates="transactions")
     payments: Mapped[list["Payment"]] = relationship(back_populates="transaction", cascade="all, delete-orphan")
+
+
+class SharedExpenseAccess(Base):
+    __tablename__ = "shared_expense_access"
+    __table_args__ = (UniqueConstraint("owner_user_id", "collaborator_user_id", name="uq_shared_owner_collaborator"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    collaborator_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    owner: Mapped[User] = relationship(foreign_keys=[owner_user_id], back_populates="shared_expense_access_as_owner")
+    collaborator: Mapped[User] = relationship(
+        foreign_keys=[collaborator_user_id],
+        back_populates="shared_expense_access_as_collaborator",
+    )
 
 
 class Payment(Base):

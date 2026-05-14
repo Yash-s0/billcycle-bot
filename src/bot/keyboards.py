@@ -29,6 +29,24 @@ def cards_keyboard(cards: Sequence[tuple[int, str]]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def txn_mode_keyboard(prefix: str = "txn_mode") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Card", callback_data=f"{prefix}:card")
+    builder.button(text="UPI", callback_data=f"{prefix}:upi")
+    builder.button(text="Cash", callback_data=f"{prefix}:cash")
+    builder.adjust(3)
+    return builder.as_markup()
+
+
+def txn_account_keyboard(accounts: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for account_key, label in accounts:
+        builder.button(text=label, callback_data=f"txn_account:{account_key}")
+    builder.button(text="Cancel", callback_data="txn_account:cancel")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def people_keyboard(people: Sequence[tuple[int, str]]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for person_id, label in people:
@@ -52,6 +70,25 @@ def months_keyboard(months: Sequence[date], include_current_shortcut: bool = Tru
     for month in months:
         builder.button(text=month.strftime("%b %Y"), callback_data=f"month:{month.strftime('%Y-%m')}")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def report_type_keyboard(prefix: str = "report_type") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Today's Report", callback_data=f"{prefix}:today")
+    builder.button(text="Weekly Report", callback_data=f"{prefix}:weekly")
+    builder.button(text="Monthly Report", callback_data=f"{prefix}:monthly")
+    builder.button(text="Custom Report", callback_data=f"{prefix}:custom")
+    builder.button(text="Cancel", callback_data=f"{prefix}:cancel")
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()
+
+
+def settings_invite_keyboard(prefix: str = "settings_invite") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Invite", callback_data=f"{prefix}:basic")
+    builder.button(text="Invite + Share Expenses", callback_data=f"{prefix}:share")
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -89,35 +126,56 @@ def txn_recent_dates_keyboard(days: int = 7) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def delete_transactions_keyboard(
-    transactions: Sequence[tuple[int, str]],
-    prev_offset: int | None,
-    next_offset: int | None,
-) -> InlineKeyboardMarkup:
+def edit_action_keyboard(prefix: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    for txn_id, label in transactions:
-        builder.button(text=label, callback_data=f"delpick:txn:{txn_id}")
-
-    nav_count = 0
-    if prev_offset is not None:
-        builder.button(text="Previous", callback_data=f"delpick:page:{prev_offset}")
-        nav_count += 1
-    if next_offset is not None:
-        builder.button(text="Next", callback_data=f"delpick:page:{next_offset}")
-        nav_count += 1
-    builder.button(text="Cancel", callback_data="delpick:cancel")
-
-    row_sizes: list[int] = [1] * len(transactions)
-    if nav_count > 0:
-        row_sizes.append(nav_count)
-    row_sizes.append(1)
-    builder.adjust(*row_sizes)
+    builder.button(text="Update", callback_data=f"{prefix}:update")
+    builder.button(text="Delete", callback_data=f"{prefix}:delete")
+    builder.button(text="Cancel", callback_data=f"{prefix}:cancel")
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 
-def delete_transaction_confirm_keyboard() -> InlineKeyboardMarkup:
+def edit_card_fields_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="Yes, Delete", callback_data="delpick:confirm:yes")
-    builder.button(text="No", callback_data="delpick:confirm:no")
+    builder.button(text="Bank Name", callback_data="edit_card_field:bank_name")
+    builder.button(text="Card Nickname", callback_data="edit_card_field:card_name")
+    builder.button(text="Billing Day", callback_data="edit_card_field:billing_day")
+    builder.button(text="Due Day", callback_data="edit_card_field:due_day")
+    builder.button(text="Credit Limit", callback_data="edit_card_field:credit_limit")
+    builder.button(text="Notes", callback_data="edit_card_field:notes")
+    builder.button(text="Back", callback_data="edit_card_field:back")
+    builder.adjust(2, 2, 2, 1)
+    return builder.as_markup()
+
+
+def edit_txn_fields_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Amount", callback_data="edit_txn_field:amount")
+    builder.button(text="Notes", callback_data="edit_txn_field:notes")
+    builder.button(text="Date", callback_data="edit_txn_field:txn_date")
+    builder.button(text="Discount", callback_data="edit_txn_field:discount_amount")
+    builder.button(text="Cashback", callback_data="edit_txn_field:cashback_amount")
+    builder.button(text="For Someone Else", callback_data="edit_txn_field:toggle_someone")
+    if is_for_someone_else:
+        builder.button(text="Person Name", callback_data="edit_txn_field:person_name")
+        builder.button(text="Paid Back?", callback_data="edit_txn_field:toggle_paid")
+    builder.button(text="Back", callback_data="edit_txn_field:back")
+    builder.adjust(2, 2, 2, 2, 1)
+    return builder.as_markup()
+
+
+def edit_confirm_delete_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Yes, Delete", callback_data=f"{prefix}:yes")
+    builder.button(text="No", callback_data=f"{prefix}:no")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def edit_txn_select_keyboard(transactions: Sequence[tuple[int, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for txn_id, label in transactions:
+        builder.button(text=label, callback_data=f"edit_txn_pick:{txn_id}")
+    builder.button(text="Cancel", callback_data="edit_txn_pick:cancel")
+    builder.adjust(1)
     return builder.as_markup()

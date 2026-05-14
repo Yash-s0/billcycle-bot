@@ -11,6 +11,8 @@ class AddCardStates(StatesGroup):
 
 
 class AddTransactionStates(StatesGroup):
+    account = State()
+    mode = State()
     card = State()
     amount = State()
     review = State()
@@ -24,13 +26,31 @@ class MarkPaidStates(StatesGroup):
     notes = State()
 
 
-class DeleteTransactionStates(StatesGroup):
-    menu = State()
-    confirm = State()
+class EditCardStates(StatesGroup):
+    card = State()
+    action = State()
+    field = State()
+    input_value = State()
+    confirm_delete = State()
+
+
+class EditTransactionStates(StatesGroup):
+    transaction = State()
+    action = State()
+    field = State()
+    input_value = State()
+    confirm_delete = State()
 
 
 class MonthlyReportStates(StatesGroup):
     month = State()
+
+
+class ReportStates(StatesGroup):
+    menu = State()
+    month = State()
+    custom_from = State()
+    custom_to = State()
 
 
 class SettingsStates(StatesGroup):

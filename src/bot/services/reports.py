@@ -5,10 +5,11 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Iterable
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Card, Payment, Person, Transaction
+from ..models import Card, Payment, PaymentMode, Person, Transaction, User
 from .billing import get_current_billing_cycle, get_next_due_date
 
 ZERO = Decimal("0")
@@ -76,6 +77,11 @@ class MonthlyReportData:
 class RecentTransactionRow:
     transaction_id: int
     card_label: str
+    payment_mode: str
+    owner_user_id: int
+    owner_name: str
+    added_by_user_id: int
+    added_by_name: str
     txn_date: date
     amount: Decimal
     discount_amount: Decimal
@@ -128,23 +134,48 @@ async def list_recent_transactions(
     limit: int = 10,
     offset: int = 0,
 ) -> list[RecentTransactionRow]:
+    owner_user = aliased(User)
+    added_by_user = aliased(User)
     query = (
-        select(Transaction, Card.card_name, Person.name)
-        .join(Card, Transaction.card_id == Card.id)
+        select(
+            Transaction,
+            Card.card_name,
+            Person.name,
+            owner_user.full_name,
+            added_by_user.full_name,
+        )
+        .outerjoin(Card, Transaction.card_id == Card.id)
         .outerjoin(Person, Person.id == Transaction.person_id)
-        .where(Transaction.user_id == user_id)
+        .join(owner_user, owner_user.id == Transaction.user_id)
+        .join(added_by_user, added_by_user.id == Transaction.added_by_user_id)
+        .where(
+            or_(
+                Transaction.user_id == user_id,
+                Transaction.added_by_user_id == user_id,
+            )
+        )
         .order_by(Transaction.txn_date.desc(), Transaction.id.desc())
         .offset(max(offset, 0))
         .limit(limit)
     )
     rows = (await session.execute(query)).all()
     result: list[RecentTransactionRow] = []
-    for txn, card_name, person_name in rows:
-        card_label = card_name
+    for txn, card_name, person_name, owner_name, added_by_name in rows:
+        if txn.payment_mode == PaymentMode.CARD:
+            card_label = card_name or "Card"
+        elif txn.payment_mode == PaymentMode.UPI:
+            card_label = "UPI"
+        else:
+            card_label = "Cash"
         result.append(
             RecentTransactionRow(
                 transaction_id=txn.id,
                 card_label=card_label,
+                payment_mode=txn.payment_mode.value,
+                owner_user_id=txn.user_id,
+                owner_name=owner_name,
+                added_by_user_id=txn.added_by_user_id,
+                added_by_name=added_by_name,
                 txn_date=txn.txn_date,
                 amount=txn.amount,
                 discount_amount=txn.discount_amount,
@@ -231,7 +262,7 @@ async def pending_transactions_for_person(
             Card.card_name,
             func.coalesce(paid_subquery.c.paid_total, 0).label("paid_total"),
         )
-        .join(Card, Card.id == Transaction.card_id)
+        .outerjoin(Card, Card.id == Transaction.card_id)
         .outerjoin(paid_subquery, paid_subquery.c.txn_id == Transaction.id)
         .where(
             Transaction.user_id == user_id,
@@ -244,6 +275,12 @@ async def pending_transactions_for_person(
     rows = (await session.execute(query)).all()
     items: list[PendingTransactionItem] = []
     for txn, card_name, paid_total in rows:
+        if txn.payment_mode == PaymentMode.CARD:
+            source_label = card_name or "Card"
+        elif txn.payment_mode == PaymentMode.UPI:
+            source_label = "UPI"
+        else:
+            source_label = "Cash"
         paid_amount = _to_decimal(paid_total)
         recoverable_amount = max(ZERO, _to_decimal(txn.final_amount) - _to_decimal(txn.cashback_amount))
         pending_amount = max(ZERO, recoverable_amount - paid_amount)
@@ -252,7 +289,7 @@ async def pending_transactions_for_person(
         items.append(
             PendingTransactionItem(
                 transaction_id=txn.id,
-                card_label=card_name,
+                card_label=source_label,
                 txn_date=txn.txn_date,
                 notes=txn.notes or "-",
                 final_amount=_to_decimal(txn.final_amount),
@@ -366,13 +403,12 @@ async def get_card_summary_data(
     )
 
 
-async def get_monthly_report_data(
+async def get_period_report_data(
     session: AsyncSession,
     user_id: int,
-    month: date,
+    start_date: date,
+    end_date: date,
 ) -> MonthlyReportData:
-    month_start, month_end = month_start_end(month)
-
     paid_subquery = (
         select(
             Payment.transaction_id.label("txn_id"),
@@ -388,8 +424,8 @@ async def get_monthly_report_data(
         .outerjoin(paid_subquery, paid_subquery.c.txn_id == Transaction.id)
         .where(
             Transaction.user_id == user_id,
-            Transaction.txn_date >= month_start,
-            Transaction.txn_date <= month_end,
+            Transaction.txn_date >= start_date,
+            Transaction.txn_date <= end_date,
         )
     )
 
@@ -410,24 +446,26 @@ async def get_monthly_report_data(
         total_spent += final_amount
         total_discounts += discount
         total_cashback += cashback
-        net_payable += max(ZERO, final_amount - cashback)
+        if txn.payment_mode == PaymentMode.CARD:
+            net_payable += max(ZERO, final_amount - cashback)
 
         if txn.is_for_someone_else:
             recoverable_amount = max(ZERO, final_amount - cashback)
             outstanding = max(ZERO, recoverable_amount - paid_amount)
             amount_owed_by_others += outstanding
 
+    notes_expr = func.coalesce(Transaction.notes, "No notes")
     notes_query = (
         select(
-            func.coalesce(Transaction.notes, "No notes").label("notes"),
+            notes_expr.label("notes"),
             func.coalesce(func.sum(Transaction.final_amount), 0).label("total"),
         )
         .where(
             Transaction.user_id == user_id,
-            Transaction.txn_date >= month_start,
-            Transaction.txn_date <= month_end,
+            Transaction.txn_date >= start_date,
+            Transaction.txn_date <= end_date,
         )
-        .group_by(func.coalesce(Transaction.notes, "No notes"))
+        .group_by(notes_expr)
         .order_by(func.sum(Transaction.final_amount).desc())
         .limit(5)
     )
@@ -436,30 +474,35 @@ async def get_monthly_report_data(
         for name, total in (await session.execute(notes_query)).all()
     ]
 
+    source_label_expr = case(
+        (Transaction.payment_mode == PaymentMode.CARD, func.coalesce(Card.card_name, "Card")),
+        (Transaction.payment_mode == PaymentMode.UPI, "UPI"),
+        else_="Cash",
+    )
     card_query = (
         select(
-            Card.card_name,
+            source_label_expr.label("source_label"),
             func.coalesce(func.sum(Transaction.final_amount), 0),
             func.coalesce(func.sum(Transaction.discount_amount), 0),
             func.coalesce(func.sum(Transaction.cashback_amount), 0),
         )
-        .join(Card, Card.id == Transaction.card_id)
+        .outerjoin(Card, Card.id == Transaction.card_id)
         .where(
             Transaction.user_id == user_id,
-            Transaction.txn_date >= month_start,
-            Transaction.txn_date <= month_end,
+            Transaction.txn_date >= start_date,
+            Transaction.txn_date <= end_date,
         )
-        .group_by(Card.id)
+        .group_by(source_label_expr)
         .order_by(func.sum(Transaction.final_amount).desc())
     )
 
     card_breakdown: list[CardBreakdownItem] = []
-    for card_name, billed_total, discount_total, cashback_total in (await session.execute(card_query)).all():
+    for source_label, billed_total, discount_total, cashback_total in (await session.execute(card_query)).all():
         billed_decimal = _to_decimal(billed_total)
         cashback_decimal = _to_decimal(cashback_total)
         card_breakdown.append(
             CardBreakdownItem(
-                card_label=card_name,
+                card_label=source_label,
                 total_billed=billed_decimal,
                 total_discount=_to_decimal(discount_total),
                 total_cashback=cashback_decimal,
@@ -468,8 +511,8 @@ async def get_monthly_report_data(
         )
 
     return MonthlyReportData(
-        month_start=month_start,
-        month_end=month_end,
+        month_start=start_date,
+        month_end=end_date,
         total_spent=total_spent,
         total_discounts=total_discounts,
         total_cashback=total_cashback,
@@ -478,6 +521,15 @@ async def get_monthly_report_data(
         top_notes=top_notes,
         card_breakdown=card_breakdown,
     )
+
+
+async def get_monthly_report_data(
+    session: AsyncSession,
+    user_id: int,
+    month: date,
+) -> MonthlyReportData:
+    month_start, month_end = month_start_end(month)
+    return await get_period_report_data(session, user_id, month_start, month_end)
 
 
 def sum_amounts(values: Iterable[Decimal]) -> Decimal:

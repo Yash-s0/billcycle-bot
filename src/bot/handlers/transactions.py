@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import asyncio
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -9,40 +7,73 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..keyboards import (
     cards_keyboard,
-    delete_transaction_confirm_keyboard,
-    delete_transactions_keyboard,
+    edit_action_keyboard,
+    edit_confirm_delete_keyboard,
+    edit_txn_fields_keyboard,
+    edit_txn_select_keyboard,
+    txn_account_keyboard,
+    txn_mode_keyboard,
     txn_draft_keyboard,
     txn_recent_dates_keyboard,
 )
-from ..models import Card, Payment, ReimbursementStatus, Transaction
+from ..models import Card, Payment, PaymentMode, ReimbursementStatus, SharedExpenseAccess, Transaction, User
 from ..services.reports import RecentTransactionRow, format_inr, list_recent_transactions
-from ..states import AddTransactionStates, DeleteTransactionStates
+from ..states import AddTransactionStates, EditTransactionStates
 from .common import (
     ensure_user,
     get_or_create_person,
     get_user_by_telegram_id,
     parse_non_negative_decimal,
     parse_positive_decimal,
-    render_pre_table,
     short_text,
 )
 
 router = Router(name=__name__)
-DELETE_TXN_PAGE_SIZE = 7
-DELETE_TXN_IDLE_SECONDS = 300
-_delete_txn_timeout_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
 
 
 def _txn_card_picker_label(card: Card) -> str:
     return card.card_name
 
 
-async def _start_add_txn_card_selection(
+def _txn_is_accessible_clause(viewer_user_id: int) -> object:
+    return or_(
+        Transaction.user_id == viewer_user_id,
+        Transaction.added_by_user_id == viewer_user_id,
+    )
+
+
+def _payment_mode_label(mode: PaymentMode | str) -> str:
+    value = mode.value if isinstance(mode, PaymentMode) else str(mode)
+    if value == PaymentMode.UPI.value:
+        return "UPI"
+    if value == PaymentMode.CASH.value:
+        return "Cash"
+    return "Card"
+
+
+def _coerce_payment_mode(raw_mode: object) -> PaymentMode:
+    raw_value = str(raw_mode or PaymentMode.CARD.value)
+    if raw_value in {member.value for member in PaymentMode}:
+        return PaymentMode(raw_value)
+    return PaymentMode.CARD
+
+
+async def _send_add_txn_mode_prompt(
+    message: Message,
+    prefill_amount: Decimal | None = None,
+) -> None:
+    prompt = "Select payment mode:"
+    if prefill_amount is not None:
+        prompt = f"Amount detected: {format_inr(prefill_amount)}\nSelect payment mode:"
+    await message.answer(prompt, reply_markup=txn_mode_keyboard("txn_mode"))
+
+
+async def _start_add_txn_account_selection(
     message: Message,
     state: FSMContext,
     session_maker: async_sessionmaker[AsyncSession],
@@ -52,35 +83,41 @@ async def _start_add_txn_card_selection(
         return
 
     async with session_maker() as session:
-        user = await ensure_user(session, message.from_user)
-        cards = (
+        adder = await ensure_user(session, message.from_user)
+        shared_owner_rows = (
             await session.execute(
-                select(Card)
-                .where(Card.user_id == user.id)
-                .order_by(Card.bank_name.asc(), Card.card_name.asc(), Card.id.asc())
+                select(SharedExpenseAccess.owner_user_id, User.full_name)
+                .join(User, User.id == SharedExpenseAccess.owner_user_id)
+                .where(SharedExpenseAccess.collaborator_user_id == adder.id)
+                .order_by(User.full_name.asc())
             )
-        ).scalars().all()
+        ).all()
 
-    if not cards:
-        await message.answer("No cards found. Add a card first with /add_card.")
-        return
-
-    card_rows = [(card.id, _txn_card_picker_label(card)) for card in cards]
     await state.clear()
-    await state.set_state(AddTransactionStates.card)
     await state.update_data(
-        user_id=user.id,
+        adder_user_id=adder.id,
         prefill_amount=str(prefill_amount) if prefill_amount is not None else None,
     )
-    prompt = "Select card:"
-    if prefill_amount is not None:
-        prompt = f"Amount detected: {format_inr(prefill_amount)}\nSelect card:"
-    await message.answer(prompt, reply_markup=cards_keyboard(card_rows))
+
+    if not shared_owner_rows:
+        await state.update_data(
+            user_id=adder.id,
+            owner_label="You",
+        )
+        await state.set_state(AddTransactionStates.mode)
+        await _send_add_txn_mode_prompt(message, prefill_amount)
+        return
+
+    account_rows: list[tuple[str, str]] = [("self", "You")]
+    for owner_user_id, owner_name in shared_owner_rows:
+        account_rows.append((f"owner:{owner_user_id}", short_text(owner_name, 22)))
+    await state.set_state(AddTransactionStates.account)
+    await message.answer("Add transaction for which account?", reply_markup=txn_account_keyboard(account_rows))
 
 
 @router.message(Command("add_txn"))
 async def add_txn_command(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
-    await _start_add_txn_card_selection(message, state, session_maker=session_maker)
+    await _start_add_txn_account_selection(message, state, session_maker=session_maker)
 
 
 @router.message(StateFilter(None), F.text.regexp(r"^\s*\d[\d,]*(\.\d+)?\s*$"))
@@ -92,12 +129,120 @@ async def quick_add_txn_amount_trigger(
     amount = parse_positive_decimal(message.text or "")
     if amount is None:
         return
-    await _start_add_txn_card_selection(
+    await _start_add_txn_account_selection(
         message,
         state,
         session_maker=session_maker,
         prefill_amount=amount,
     )
+
+
+@router.callback_query(AddTransactionStates.account, F.data.startswith("txn_account:"))
+async def add_txn_select_account(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message:
+        return
+
+    choice = callback.data.split(":", maxsplit=1)[1]
+    data = await state.get_data()
+    adder_user_id = int(data["adder_user_id"])
+    prefill_amount_raw = data.get("prefill_amount")
+    prefill_amount = parse_positive_decimal(str(prefill_amount_raw)) if prefill_amount_raw is not None else None
+
+    if choice == "cancel":
+        await callback.answer("Cancelled")
+        await state.clear()
+        await callback.message.answer("Add transaction cancelled.")
+        return
+
+    if choice == "self":
+        await callback.answer()
+        await state.update_data(user_id=adder_user_id, owner_label="You")
+        await state.set_state(AddTransactionStates.mode)
+        await _send_add_txn_mode_prompt(callback.message, prefill_amount)
+        return
+
+    if not choice.startswith("owner:"):
+        await callback.answer("Invalid account", show_alert=True)
+        return
+
+    raw_owner_id = choice.split(":", maxsplit=1)[1]
+    if not raw_owner_id.isdigit():
+        await callback.answer("Invalid account", show_alert=True)
+        return
+    owner_user_id = int(raw_owner_id)
+
+    async with session_maker() as session:
+        owner = await session.scalar(select(User).where(User.id == owner_user_id))
+        shared_access = await session.scalar(
+            select(SharedExpenseAccess).where(
+                SharedExpenseAccess.owner_user_id == owner_user_id,
+                SharedExpenseAccess.collaborator_user_id == adder_user_id,
+            )
+        )
+    if not owner or not shared_access:
+        await callback.answer("Access not found", show_alert=True)
+        return
+
+    await callback.answer()
+    await state.update_data(user_id=owner_user_id, owner_label=owner.full_name)
+    await state.set_state(AddTransactionStates.mode)
+    await _send_add_txn_mode_prompt(callback.message, prefill_amount)
+
+
+@router.callback_query(AddTransactionStates.mode, F.data.startswith("txn_mode:"))
+async def add_txn_select_mode(callback: CallbackQuery, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    if not callback.message:
+        return
+
+    raw_mode = callback.data.split(":", maxsplit=1)[1]
+    if raw_mode not in {PaymentMode.CARD.value, PaymentMode.UPI.value, PaymentMode.CASH.value}:
+        await callback.answer("Invalid mode", show_alert=True)
+        return
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+    selected_mode = PaymentMode(raw_mode)
+    await state.update_data(
+        payment_mode=selected_mode.value,
+        card_id=None,
+        card_label=None,
+    )
+
+    if selected_mode == PaymentMode.CARD:
+        async with session_maker() as session:
+            cards = (
+                await session.execute(
+                    select(Card)
+                    .where(Card.user_id == user_id)
+                    .order_by(Card.bank_name.asc(), Card.card_name.asc(), Card.id.asc())
+                )
+            ).scalars().all()
+        if not cards:
+            await callback.answer("No cards found", show_alert=True)
+            await callback.message.answer("No cards found. Add a card first with /add_card.")
+            return
+
+        card_rows = [(card.id, _txn_card_picker_label(card)) for card in cards]
+        await callback.answer()
+        await state.set_state(AddTransactionStates.card)
+        await callback.message.answer("Select card:", reply_markup=cards_keyboard(card_rows))
+        return
+
+    prefill_amount_raw = data.get("prefill_amount")
+    prefill_amount = parse_positive_decimal(str(prefill_amount_raw)) if prefill_amount_raw is not None else None
+    source_label = _payment_mode_label(selected_mode)
+    await callback.answer()
+    if prefill_amount is not None:
+        await callback.message.answer(f"Selected payment mode: {source_label}")
+        await _open_add_txn_draft(callback.message, state, prefill_amount)
+        return
+
+    await state.set_state(AddTransactionStates.amount)
+    await callback.message.answer(f"Selected payment mode: {source_label}\nEnter amount:")
 
 
 @router.callback_query(AddTransactionStates.card, F.data.startswith("card:"))
@@ -119,7 +264,11 @@ async def add_txn_select_card(callback: CallbackQuery, state: FSMContext, sessio
 
     await callback.answer()
     selected_card_label = _txn_card_picker_label(card)
-    await state.update_data(card_id=card.id, card_label=selected_card_label)
+    await state.update_data(
+        payment_mode=PaymentMode.CARD.value,
+        card_id=card.id,
+        card_label=selected_card_label,
+    )
     prefill_amount_raw = data.get("prefill_amount")
     if prefill_amount_raw is not None:
         prefill_amount = parse_positive_decimal(str(prefill_amount_raw))
@@ -143,7 +292,10 @@ async def add_txn_amount(message: Message, state: FSMContext) -> None:
 
 
 async def _open_add_txn_draft(message: Message, state: FSMContext, amount: Decimal) -> None:
+    data = await state.get_data()
+    payment_mode = _coerce_payment_mode(data.get("payment_mode"))
     await state.update_data(
+        payment_mode=payment_mode.value,
         amount=str(amount),
         notes=None,
         txn_date=date.today().isoformat(),
@@ -351,6 +503,13 @@ def _prompt_for_optional_field(field: str) -> str:
 
 async def _send_txn_draft_menu(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
+    payment_mode = _coerce_payment_mode(data.get("payment_mode"))
+    owner_label = str(data.get("owner_label") or "You")
+    payment_source = (
+        str(data.get("card_label") or "-")
+        if payment_mode == PaymentMode.CARD
+        else _payment_mode_label(payment_mode)
+    )
     amount = Decimal(str(data["amount"]))
     discount_amount = Decimal(str(data.get("discount_amount", "0")))
     cashback_amount = Decimal(str(data.get("cashback_amount", "0")))
@@ -367,7 +526,9 @@ async def _send_txn_draft_menu(message: Message, state: FSMContext) -> None:
 
     draft_text = (
         "Transaction draft\n"
-        f"Card: {data.get('card_label', '-')}\n"
+        f"Account: {owner_label}\n"
+        f"Payment mode: {_payment_mode_label(payment_mode)}\n"
+        f"Source: {payment_source}\n"
         f"Amount: {format_inr(amount)}\n"
         f"Notes: {data.get('notes') or '-'}\n"
         f"Date: {data.get('txn_date', '-')}\n"
@@ -419,6 +580,15 @@ async def _persist_transaction(
         return
 
     data = await state.get_data()
+    owner_user_id = int(data["user_id"])
+    added_by_user_id = int(data.get("adder_user_id", owner_user_id))
+    payment_mode = _coerce_payment_mode(data.get("payment_mode"))
+    raw_card_id = data.get("card_id")
+    card_id = int(raw_card_id) if raw_card_id is not None else None
+    if payment_mode == PaymentMode.CARD and card_id is None:
+        await message.answer("Select a card for card-mode transactions. Please try /add_txn again.")
+        await state.clear()
+        return
     amount = Decimal(str(data["amount"]))
     discount_amount = Decimal(str(data.get("discount_amount", "0")))
     cashback_amount = Decimal(str(data.get("cashback_amount", "0")))
@@ -437,6 +607,18 @@ async def _persist_transaction(
     recoverable_amount = final_amount - cashback_amount
 
     async with session_maker() as session:
+        if payment_mode == PaymentMode.CARD:
+            card = await session.scalar(
+                select(Card).where(
+                    Card.id == card_id,
+                    Card.user_id == owner_user_id,
+                )
+            )
+            if not card:
+                await message.answer("Selected card was not found for this account. Please try /add_txn again.")
+                await state.clear()
+                return
+
         person_id = None
         if data.get("is_for_someone_else"):
             person_name = str(data.get("person_name") or "").strip()
@@ -444,13 +626,15 @@ async def _persist_transaction(
                 await message.answer("Person name is required for reimbursements. Please use /add_txn again.")
                 await state.clear()
                 return
-            person = await get_or_create_person(session, int(data["user_id"]), person_name)
+            person = await get_or_create_person(session, owner_user_id, person_name)
             person_id = person.id
 
         status = ReimbursementStatus(str(data.get("reimbursement_status", ReimbursementStatus.OWN.value)))
         txn = Transaction(
-            user_id=int(data["user_id"]),
-            card_id=int(data["card_id"]),
+            user_id=owner_user_id,
+            added_by_user_id=added_by_user_id,
+            card_id=card_id,
+            payment_mode=payment_mode,
             amount=amount,
             discount_amount=discount_amount,
             cashback_amount=cashback_amount,
@@ -509,268 +693,404 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
         await message.answer("No transactions found. Use /add_txn.")
         return
 
-    rows: list[list[str]] = []
-    for txn in txns:
-        owes_amount = txn.final_amount - txn.cashback_amount
-        rows.append(
-            [
-                str(txn.transaction_id),
-                txn.txn_date.isoformat(),
-                short_text(txn.card_label, 14),
-                format_inr(txn.final_amount),
-                format_inr(txn.cashback_amount),
-                format_inr(owes_amount),
-                short_text(txn.notes, 18),
-                txn.reimbursement_status,
+    own_txns = [txn for txn in txns if txn.owner_user_id == user.id and txn.added_by_user_id == user.id]
+    added_by_others = [txn for txn in txns if txn.owner_user_id == user.id and txn.added_by_user_id != user.id]
+    added_to_others = [txn for txn in txns if txn.owner_user_id != user.id and txn.added_by_user_id == user.id]
+
+    lines = ["Recent transactions:"]
+
+    def _append_txn_block(title: str, rows: list[RecentTransactionRow], include_owner: bool, include_adder: bool) -> None:
+        if not rows:
+            return
+        lines.append("")
+        lines.append(title)
+        for txn in rows:
+            owes_amount = txn.final_amount - txn.cashback_amount
+            lines.append(
+                f"{txn.txn_date.isoformat()} | {short_text(txn.card_label, 18)} | Total {format_inr(txn.final_amount)}"
+            )
+            details = [
+                f"Cashbk {format_inr(txn.cashback_amount)}",
+                f"Owes {format_inr(owes_amount)}",
             ]
-        )
-    table = render_pre_table(
-        headers=["ID", "Date", "Card", "Total", "Cashbk", "Owes", "Notes", "Status"],
-        rows=rows,
-        right_align_cols={0, 3, 4, 5},
-    )
-    await message.answer("Recent transactions:")
-    await message.answer(table)
+            if include_owner:
+                details.append(f"Account {short_text(txn.owner_name, 16)}")
+            if include_adder:
+                details.append(f"Added by {short_text(txn.added_by_name, 16)}")
+            if txn.is_for_someone_else and txn.person_name:
+                details.append(f"For {short_text(txn.person_name, 16)}")
+            notes = "-" if txn.notes == "-" else short_text(txn.notes, 40)
+            details.append(f"Notes {notes}")
+            lines.append(" | ".join(details))
+            lines.append("")
+
+    _append_txn_block("Your transactions:", own_txns, include_owner=False, include_adder=False)
+    _append_txn_block("Added to your account by others:", added_by_others, include_owner=False, include_adder=True)
+    _append_txn_block("Transactions you added to others:", added_to_others, include_owner=True, include_adder=False)
+
+    if len(lines) == 1:
+        # Fallback: if rows are somehow filtered out from all sections, show generic list.
+        for txn in txns:
+            owes_amount = txn.final_amount - txn.cashback_amount
+            lines.append(
+                f"{txn.txn_date.isoformat()} | {short_text(txn.card_label, 18)} | Total {format_inr(txn.final_amount)}"
+            )
+            lines.append(
+                f"Cashbk {format_inr(txn.cashback_amount)} | Owes {format_inr(owes_amount)} | "
+                f"Notes {short_text(txn.notes, 40)}"
+            )
+            lines.append("")
+
+    await message.answer("\n".join(lines).strip())
 
 
-@router.message(Command("delete_txn"))
-async def delete_txn_command(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+@router.message(Command("edit_txn"))
+async def edit_txn_command(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
     if not message.from_user:
         return
-
-    existing_data = await state.get_data()
-    old_chat_id = existing_data.get("delete_menu_chat_id")
-    old_message_id = existing_data.get("delete_menu_message_id")
-    if old_chat_id and old_message_id:
-        _cancel_delete_txn_timeout(int(old_chat_id), int(old_message_id))
-        try:
-            await message.bot.edit_message_reply_markup(
-                chat_id=int(old_chat_id),
-                message_id=int(old_message_id),
-                reply_markup=None,
-            )
-        except TelegramBadRequest:
-            pass
 
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
             await message.answer("No profile found. Use /start first.")
             return
+        txns = await list_recent_transactions(session, user.id, limit=10)
 
-        page_rows = await list_recent_transactions(
-            session,
-            user.id,
-            limit=DELETE_TXN_PAGE_SIZE + 1,
-            offset=0,
-        )
-
-    if not page_rows:
-        await message.answer("No transactions to delete.")
+    if not txns:
+        await message.answer("No transactions found. Use /add_txn.")
         return
 
+    rows = [(txn.transaction_id, _txn_picker_button_label(txn)) for txn in txns]
     await state.clear()
-    await state.set_state(DeleteTransactionStates.menu)
-
-    visible_rows = page_rows[:DELETE_TXN_PAGE_SIZE]
-    next_offset = DELETE_TXN_PAGE_SIZE if len(page_rows) > DELETE_TXN_PAGE_SIZE else None
-    buttons = [(txn.transaction_id, _delete_txn_button_label(txn)) for txn in visible_rows]
-
-    sent = await message.answer(
-        _delete_txn_page_text(offset=0, shown_count=len(visible_rows)),
-        reply_markup=delete_transactions_keyboard(buttons, prev_offset=None, next_offset=next_offset),
-    )
-    await state.update_data(
-        user_id=user.id,
-        delete_menu_chat_id=sent.chat.id,
-        delete_menu_message_id=sent.message_id,
-        delete_offset=0,
-    )
-    _reset_delete_txn_timeout(sent)
+    await state.set_state(EditTransactionStates.transaction)
+    await state.update_data(user_id=user.id)
+    await message.answer("Select a transaction to edit:", reply_markup=edit_txn_select_keyboard(rows))
 
 
-@router.callback_query(DeleteTransactionStates.menu, F.data.startswith("delpick:"))
-async def delete_txn_menu_action(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session_maker: async_sessionmaker[AsyncSession],
-) -> None:
+@router.callback_query(EditTransactionStates.transaction, F.data.startswith("edit_txn_pick:"))
+async def edit_txn_select(callback: CallbackQuery, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
     if not callback.message:
         return
-
-    parts = callback.data.split(":", maxsplit=2)
-    if len(parts) < 2:
-        await callback.answer("Invalid action", show_alert=True)
-        return
-
-    action = parts[1]
-    value = parts[2] if len(parts) > 2 else ""
-    data = await state.get_data()
-    user_id = int(data["user_id"])
-
-    if action == "cancel":
-        await callback.answer("Cancelled")
-        await state.clear()
-        _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
-        try:
-            await callback.message.edit_text("Delete cancelled.", reply_markup=None)
-        except TelegramBadRequest:
-            await callback.message.answer("Delete cancelled.")
-        return
-
-    if action == "page":
-        if not value.isdigit():
-            await callback.answer("Invalid page", show_alert=True)
-            return
-        next_page_offset = int(value)
-        async with session_maker() as session:
-            page_rows = await list_recent_transactions(
-                session,
-                user_id,
-                limit=DELETE_TXN_PAGE_SIZE + 1,
-                offset=next_page_offset,
-            )
-        if not page_rows:
-            await callback.answer("No more transactions.", show_alert=True)
-            return
-
-        visible_rows = page_rows[:DELETE_TXN_PAGE_SIZE]
-        has_more = len(page_rows) > DELETE_TXN_PAGE_SIZE
-        prev_offset = next_page_offset - DELETE_TXN_PAGE_SIZE if next_page_offset > 0 else None
-        upcoming_offset = next_page_offset + DELETE_TXN_PAGE_SIZE if has_more else None
-        buttons = [(txn.transaction_id, _delete_txn_button_label(txn)) for txn in visible_rows]
-
-        await callback.answer()
-        await callback.message.edit_text(
-            _delete_txn_page_text(offset=next_page_offset, shown_count=len(visible_rows)),
-            reply_markup=delete_transactions_keyboard(
-                buttons,
-                prev_offset=prev_offset,
-                next_offset=upcoming_offset,
-            ),
-        )
-        await state.update_data(delete_offset=next_page_offset)
-        _reset_delete_txn_timeout(callback.message)
-        return
-
-    if action == "txn":
-        if not value.isdigit():
-            await callback.answer("Invalid transaction", show_alert=True)
-            return
-        txn_id = int(value)
-        async with session_maker() as session:
-            txn = await session.scalar(
-                select(Transaction).where(Transaction.id == txn_id, Transaction.user_id == user_id)
-            )
-        if not txn:
-            await callback.answer("Transaction not found", show_alert=True)
-            return
-
-        await state.update_data(transaction_id=txn.id)
-        await state.set_state(DeleteTransactionStates.confirm)
-        await callback.answer()
-        await callback.message.edit_text(
-            "Confirm delete this transaction?\n"
-            f"ID: {txn.id}\n"
-            f"Date: {txn.txn_date.isoformat()}\n"
-            f"Amount: {format_inr(txn.final_amount)}",
-            reply_markup=delete_transaction_confirm_keyboard(),
-        )
-        _reset_delete_txn_timeout(callback.message)
-        return
-
-    await callback.answer("Unknown action", show_alert=True)
-
-
-@router.callback_query(DeleteTransactionStates.confirm, F.data.startswith("delpick:confirm:"))
-async def delete_txn_confirm(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session_maker: async_sessionmaker[AsyncSession],
-) -> None:
-    if not callback.message:
-        return
-
     await callback.answer()
-    choice = callback.data.split(":", maxsplit=2)[2]
 
-    if choice == "no":
-        _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
+    raw = callback.data.split(":", maxsplit=1)[1]
+    if raw == "cancel":
         await state.clear()
-        try:
-            await callback.message.edit_text("Delete cancelled.", reply_markup=None)
-        except TelegramBadRequest:
-            await callback.message.answer("Delete cancelled.")
+        await callback.message.answer("Edit transaction cancelled.")
+        return
+    if not raw.isdigit():
+        await callback.message.answer("Invalid transaction.")
+        await state.clear()
         return
 
+    txn_id = int(raw)
     data = await state.get_data()
     user_id = int(data["user_id"])
-    txn_id = int(data["transaction_id"])
-
     async with session_maker() as session:
         txn = await session.scalar(
-            select(Transaction).where(Transaction.id == txn_id, Transaction.user_id == user_id)
+            select(Transaction).where(
+                Transaction.id == txn_id,
+                _txn_is_accessible_clause(user_id),
+            )
+        )
+    if not txn:
+        await callback.message.answer("Transaction not found.")
+        await state.clear()
+        return
+
+    await state.update_data(edit_txn_id=txn.id)
+    await state.set_state(EditTransactionStates.action)
+    await callback.message.answer(
+        _format_txn_summary(txn),
+        reply_markup=edit_action_keyboard("edit_txn_action"),
+    )
+
+
+@router.callback_query(EditTransactionStates.action, F.data.startswith("edit_txn_action:"))
+async def edit_txn_action(callback: CallbackQuery, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+    action = callback.data.split(":", maxsplit=1)[1]
+
+    if action == "cancel":
+        await state.clear()
+        await callback.message.answer("Edit transaction cancelled.")
+        return
+    if action == "delete":
+        await state.set_state(EditTransactionStates.confirm_delete)
+        await callback.message.answer(
+            "Delete this transaction?",
+            reply_markup=edit_confirm_delete_keyboard("edit_txn_delete"),
+        )
+        return
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+    txn_id = int(data["edit_txn_id"])
+    async with session_maker() as session:
+        txn = await session.scalar(
+            select(Transaction).where(
+                Transaction.id == txn_id,
+                _txn_is_accessible_clause(user_id),
+            )
+        )
+    if not txn:
+        await state.clear()
+        await callback.message.answer("Transaction not found.")
+        return
+    await state.set_state(EditTransactionStates.field)
+    await callback.message.answer(
+        "Choose what to update:",
+        reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)),
+    )
+
+
+@router.callback_query(EditTransactionStates.confirm_delete, F.data.startswith("edit_txn_delete:"))
+async def edit_txn_delete_confirm(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+    choice = callback.data.split(":", maxsplit=1)[1]
+    if choice == "no":
+        await state.set_state(EditTransactionStates.action)
+        await callback.message.answer("Delete cancelled.", reply_markup=edit_action_keyboard("edit_txn_action"))
+        return
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+    txn_id = int(data["edit_txn_id"])
+    async with session_maker() as session:
+        txn = await session.scalar(
+            select(Transaction).where(
+                Transaction.id == txn_id,
+                _txn_is_accessible_clause(user_id),
+            )
         )
         if not txn:
-            _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
             await state.clear()
-            try:
-                await callback.message.edit_text("Transaction not found. Nothing deleted.", reply_markup=None)
-            except TelegramBadRequest:
-                await callback.message.answer("Transaction not found. Nothing deleted.")
+            await callback.message.answer("Transaction not found. Nothing deleted.")
             return
-
         await session.delete(txn)
         await session.commit()
 
-    _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
     await state.clear()
-    try:
-        await callback.message.edit_text(f"Deleted transaction ID {txn_id}.", reply_markup=None)
-    except TelegramBadRequest:
-        await callback.message.answer(f"Deleted transaction ID {txn_id}.")
+    await callback.message.answer(f"Deleted transaction ID {txn_id}.")
 
 
-def _delete_txn_button_label(txn: RecentTransactionRow) -> str:
+@router.callback_query(EditTransactionStates.field, F.data.startswith("edit_txn_field:"))
+async def edit_txn_field_select(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+    field = callback.data.split(":", maxsplit=1)[1]
+
+    if field == "back":
+        await state.set_state(EditTransactionStates.action)
+        await callback.message.answer("Back to actions.", reply_markup=edit_action_keyboard("edit_txn_action"))
+        return
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+    txn_id = int(data["edit_txn_id"])
+
+    async with session_maker() as session:
+        txn = await session.scalar(
+            select(Transaction).where(
+                Transaction.id == txn_id,
+                _txn_is_accessible_clause(user_id),
+            )
+        )
+        if not txn:
+            await state.clear()
+            await callback.message.answer("Transaction not found.")
+            return
+
+        if field == "toggle_someone":
+            if txn.is_for_someone_else:
+                txn.is_for_someone_else = False
+                txn.person_id = None
+                txn.reimbursement_status = ReimbursementStatus.OWN
+            else:
+                txn.is_for_someone_else = True
+                if txn.reimbursement_status == ReimbursementStatus.OWN:
+                    txn.reimbursement_status = ReimbursementStatus.PENDING
+            await session.commit()
+            await session.refresh(txn)
+            await callback.message.answer(
+                "Updated.\n" + _format_txn_summary(txn),
+                reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)),
+            )
+            return
+
+        if field == "toggle_paid":
+            if not txn.is_for_someone_else:
+                await callback.message.answer("Enable 'For Someone Else' first.")
+                return
+            txn.reimbursement_status = (
+                ReimbursementStatus.PENDING
+                if txn.reimbursement_status == ReimbursementStatus.PAID
+                else ReimbursementStatus.PAID
+            )
+            await session.commit()
+            await session.refresh(txn)
+            await callback.message.answer(
+                "Updated.\n" + _format_txn_summary(txn),
+                reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)),
+            )
+            return
+
+    await state.update_data(edit_txn_pending_field=field)
+    await state.set_state(EditTransactionStates.input_value)
+    await callback.message.answer(_edit_txn_field_prompt(field))
+
+
+@router.message(EditTransactionStates.input_value)
+async def edit_txn_field_input(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    data = await state.get_data()
+    field = str(data.get("edit_txn_pending_field") or "")
+    user_id = int(data["user_id"])
+    txn_id = int(data["edit_txn_id"])
+    raw = (message.text or "").strip()
+    raw_lower = raw.lower()
+
+    async with session_maker() as session:
+        txn = await session.scalar(
+            select(Transaction).where(
+                Transaction.id == txn_id,
+                _txn_is_accessible_clause(user_id),
+            )
+        )
+        if not txn:
+            await state.clear()
+            await message.answer("Transaction not found.")
+            return
+
+        amount = Decimal(str(txn.amount))
+        discount = Decimal(str(txn.discount_amount))
+        cashback = Decimal(str(txn.cashback_amount))
+
+        if field == "amount":
+            parsed = parse_positive_decimal(raw)
+            if parsed is None:
+                await message.answer("Amount must be a positive number. Enter again:")
+                return
+            amount = parsed
+        elif field == "notes":
+            txn.notes = None if raw_lower == "skip" or not raw else raw
+        elif field == "txn_date":
+            if raw_lower in {"skip", "today", ""}:
+                txn.txn_date = date.today()
+            else:
+                try:
+                    txn.txn_date = datetime.strptime(raw, "%Y-%m-%d").date()
+                except ValueError:
+                    await message.answer("Invalid date. Use YYYY-MM-DD, or send 'skip' for today:")
+                    return
+        elif field == "discount_amount":
+            parsed = parse_non_negative_decimal(raw)
+            if parsed is None:
+                await message.answer("Discount must be non-negative. Enter again:")
+                return
+            discount = parsed
+        elif field == "cashback_amount":
+            parsed = parse_non_negative_decimal(raw)
+            if parsed is None:
+                await message.answer("Cashback must be non-negative. Enter again:")
+                return
+            cashback = parsed
+        elif field == "person_name":
+            if not txn.is_for_someone_else:
+                await message.answer("Enable 'For Someone Else' first.")
+                return
+            if raw_lower == "skip" or not raw:
+                txn.person_id = None
+            else:
+                person = await get_or_create_person(session, user_id, raw)
+                txn.person_id = person.id
+        else:
+            await state.set_state(EditTransactionStates.field)
+            await message.answer("Unknown field.", reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)))
+            return
+
+        final_amount = amount - discount
+        if final_amount < 0:
+            await message.answer("Discount cannot exceed amount. Enter again:")
+            return
+        if cashback > final_amount:
+            await message.answer("Cashback cannot exceed total after discount. Enter again:")
+            return
+
+        txn.amount = amount
+        txn.discount_amount = discount
+        txn.cashback_amount = cashback
+        txn.final_amount = final_amount
+        if not txn.is_for_someone_else:
+            txn.reimbursement_status = ReimbursementStatus.OWN
+            txn.person_id = None
+        elif txn.reimbursement_status == ReimbursementStatus.OWN:
+            txn.reimbursement_status = ReimbursementStatus.PENDING
+
+        await session.commit()
+        await session.refresh(txn)
+        summary = _format_txn_summary(txn)
+        is_for_someone_else = bool(txn.is_for_someone_else)
+
+    await state.update_data(edit_txn_pending_field=None)
+    await state.set_state(EditTransactionStates.field)
+    await message.answer("Updated.\n" + summary, reply_markup=edit_txn_fields_keyboard(is_for_someone_else))
+
+
+def _txn_picker_button_label(txn: RecentTransactionRow) -> str:
     label = f"{txn.txn_date.isoformat()} | {format_inr(txn.final_amount)}"
+    if txn.owner_user_id != txn.added_by_user_id:
+        label = f"{label} | {short_text(txn.owner_name, 12)}"
     if txn.is_for_someone_else and txn.person_name:
         return f"{label} | {short_text(txn.person_name, 14)}"
     return label
 
 
-def _delete_txn_page_text(offset: int, shown_count: int) -> str:
-    start_idx = offset + 1
-    end_idx = offset + shown_count
+def _format_txn_summary(txn: Transaction) -> str:
+    payment_mode = _coerce_payment_mode(txn.payment_mode)
+    mode_label = _payment_mode_label(payment_mode)
+    if payment_mode == PaymentMode.CARD:
+        source_label = f"Card ID {txn.card_id}" if txn.card_id is not None else "Card"
+    else:
+        source_label = mode_label
     return (
-        "Select a transaction to delete.\n"
-        f"Showing {start_idx}-{end_idx}.\n"
-        "Buttons auto-expire in 5 minutes."
+        f"Transaction ID: {txn.id}\n"
+        f"Payment mode: {mode_label}\n"
+        f"Source: {source_label}\n"
+        f"Date: {txn.txn_date.isoformat()}\n"
+        f"Amount: {format_inr(txn.amount)}\n"
+        f"Discount: {format_inr(txn.discount_amount)}\n"
+        f"Cashback: {format_inr(txn.cashback_amount)}\n"
+        f"Total: {format_inr(txn.final_amount)}\n"
+        f"Notes: {txn.notes or '-'}\n"
+        f"For someone else: {'Yes' if txn.is_for_someone_else else 'No'}\n"
+        f"Reimbursement: {txn.reimbursement_status.value}"
     )
 
 
-def _reset_delete_txn_timeout(message: Message) -> None:
-    chat_id = message.chat.id
-    message_id = message.message_id
-    key = (chat_id, message_id)
-    _cancel_delete_txn_timeout(chat_id, message_id)
-    _delete_txn_timeout_tasks[key] = asyncio.create_task(
-        _expire_delete_txn_keyboard(message.bot, chat_id, message_id)
-    )
-
-
-def _cancel_delete_txn_timeout(chat_id: int, message_id: int) -> None:
-    key = (chat_id, message_id)
-    task = _delete_txn_timeout_tasks.pop(key, None)
-    if task:
-        task.cancel()
-
-
-async def _expire_delete_txn_keyboard(bot: object, chat_id: int, message_id: int) -> None:
-    key = (chat_id, message_id)
-    try:
-        await asyncio.sleep(DELETE_TXN_IDLE_SECONDS)
-        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
-    except (TelegramBadRequest, asyncio.CancelledError):
-        return
-    finally:
-        _delete_txn_timeout_tasks.pop(key, None)
+def _edit_txn_field_prompt(field: str) -> str:
+    if field == "amount":
+        return "Enter new amount:"
+    if field == "notes":
+        return "Enter new notes, or send 'skip' to clear:"
+    if field == "txn_date":
+        return "Enter new date in YYYY-MM-DD, or send 'skip' for today:"
+    if field == "discount_amount":
+        return "Enter new discount amount:"
+    if field == "cashback_amount":
+        return "Enter new cashback amount:"
+    if field == "person_name":
+        return "Enter person name, or send 'skip' to clear:"
+    return "Enter value:"

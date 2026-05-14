@@ -106,7 +106,7 @@ async def mark_paid_select_person(
             ]
         )
     table = render_pre_table(
-        headers=["ID", "Date", "Card", "Notes", "Total", "Cashbk", "Owes", "Pending"],
+        headers=["ID", "Date", "Source", "Notes", "Total", "Cashbk", "Owes", "Pending"],
         rows=table_rows,
         right_align_cols={0, 4, 5, 6, 7},
     )

@@ -60,29 +60,31 @@ Note: The app also tries to run `alembic upgrade head` on startup, and falls bac
 - `/start` - Register user and show welcome
 - `/help` - Show command help
 - `/add_card` - Add a card
-- `/list_cards` - List cards
+- `/list_cards` - Manage cards (view/update/delete)
 - `/add_txn` - Add transaction
+- `/edit_txn` - Update or delete a transaction
 - `/recent_txns` - Show latest 10 transactions
 - `/who_owes_me` - Person-wise pending receivables
 - `/mark_paid` - Mark a reimbursement payment
 - `/card_summary` - Card cycle summary
-- `/monthly_report` - Month-wise report
-- `/delete_txn` - Delete your transaction with confirmation
+- `/report` - Today/weekly/monthly/custom report
 - `/settings` - Basic bot settings info
 
 `/add_txn` behavior notes:
-- asks only card + amount upfront, then shows inline buttons for optional fields
+- asks "which account?" when shared-expense access exists (`You` or shared owner)
+- asks payment mode first (`Card`, `UPI`, `Cash`)
+- if mode is `Card`, asks card; for `UPI`/`Cash`, no card/bank-account details are needed
 - lets you fill only needed fields (notes/date/discount/cashback/reimbursement)
 - when no flow is active, sending a plain amount (for example `250` or `1,299.50`) auto-starts add transaction
 - stores both in DB (`discount_amount`, `cashback_amount`)
 - uses `total = amount - discount`
 - uses `owes = total - cashback` for reimbursements
+- includes UPI/Cash spends in summaries, while card bill-to-repay excludes UPI/Cash spends
 
-`/delete_txn` behavior notes:
-- shows recent transactions as inline buttons (7 at a time)
-- includes `Next/Previous` pagination and inline confirm before delete
-- button label format: `date | amount` (or `date | amount | person` for reimbursements)
-- delete keyboards auto-expire (buttons removed) after 5 minutes of inactivity
+`/settings` invite options:
+- `Invite`: basic bot invite link
+- `Invite + Share Expenses`: invited user can add transactions to your account via their `/add_txn`
+- shared collaborators can view only their own transactions and transactions they themselves added to shared accounts
 
 ## Reminder behavior
 A daily scheduler runs at `09:00` in `TIMEZONE` and sends reminders for:
