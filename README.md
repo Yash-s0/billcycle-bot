@@ -71,7 +71,8 @@ Note: The app also tries to run `alembic upgrade head` on startup, and falls bac
 - `/settings` - Basic bot settings info
 
 `/add_txn` behavior notes:
-- asks discount and cashback as separate inputs
+- asks only card + amount upfront, then shows inline buttons for optional fields
+- lets you fill only needed fields (merchant/category/date/discount/cashback/reimbursement)
 - stores both in DB (`discount_amount`, `cashback_amount`)
 - uses `total = amount - discount`
 - uses `owes = total - cashback` for reimbursements

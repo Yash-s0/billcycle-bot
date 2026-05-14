@@ -14,16 +14,8 @@ class AddCardStates(StatesGroup):
 class AddTransactionStates(StatesGroup):
     card = State()
     amount = State()
-    merchant = State()
-    category = State()
-    txn_date = State()
-    has_discount = State()
-    discount_amount = State()
-    has_cashback = State()
-    cashback_amount = State()
-    ownership = State()
-    person_name = State()
-    already_paid = State()
+    review = State()
+    input_optional = State()
 
 
 class MarkPaidStates(StatesGroup):

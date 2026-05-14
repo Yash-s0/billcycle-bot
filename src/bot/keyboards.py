@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Sequence
 
 from aiogram.types import InlineKeyboardMarkup
@@ -52,4 +52,39 @@ def months_keyboard(months: Sequence[date], include_current_shortcut: bool = Tru
     for month in months:
         builder.button(text=month.strftime("%b %Y"), callback_data=f"month:{month.strftime('%Y-%m')}")
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def txn_draft_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Merchant", callback_data="txn_opt:merchant")
+    builder.button(text="Category", callback_data="txn_opt:category")
+    builder.button(text="Date", callback_data="txn_opt:txn_date")
+    builder.button(text="Discount", callback_data="txn_opt:discount_amount")
+    builder.button(text="Cashback", callback_data="txn_opt:cashback_amount")
+    builder.button(text="For Someone Else", callback_data="txn_opt:toggle_someone")
+    if is_for_someone_else:
+        builder.button(text="Person Name", callback_data="txn_opt:person_name")
+        builder.button(text="Paid Back?", callback_data="txn_opt:toggle_paid")
+    builder.button(text="Save Transaction", callback_data="txn_opt:save")
+    builder.button(text="Cancel", callback_data="txn_opt:cancel")
+    builder.adjust(2, 2, 2, 2, 2)
+    return builder.as_markup()
+
+
+def txn_recent_dates_keyboard(days: int = 7) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for offset in range(max(days, 1)):
+        candidate = date.today() - timedelta(days=offset)
+        if offset == 0:
+            label = f"Today ({candidate.strftime('%d %b')})"
+        elif offset == 1:
+            label = f"Yesterday ({candidate.strftime('%d %b')})"
+        else:
+            label = candidate.strftime("%a (%d %b)")
+        builder.button(text=label, callback_data=f"txn_datepick:{candidate.isoformat()}")
+
+    builder.button(text="Custom Date", callback_data="txn_datepick:custom")
+    builder.button(text="Back", callback_data="txn_datepick:back")
+    builder.adjust(2, 2, 2, 1, 2)
     return builder.as_markup()
