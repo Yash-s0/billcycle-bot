@@ -98,7 +98,7 @@ async def mark_paid_select_person(
                 str(item.transaction_id),
                 item.txn_date.isoformat(),
                 short_text(item.card_label, 14),
-                short_text(item.merchant, 14),
+                short_text(item.notes, 16),
                 format_inr(item.final_amount),
                 format_inr(item.cashback_amount),
                 format_inr(item.recoverable_amount),
@@ -106,7 +106,7 @@ async def mark_paid_select_person(
             ]
         )
     table = render_pre_table(
-        headers=["ID", "Date", "Card", "Merchant", "Total", "Cashbk", "Owes", "Pending"],
+        headers=["ID", "Date", "Card", "Notes", "Total", "Cashbk", "Owes", "Pending"],
         rows=table_rows,
         right_align_cols={0, 4, 5, 6, 7},
     )

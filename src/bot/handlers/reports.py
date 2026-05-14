@@ -127,7 +127,7 @@ async def card_summary_selected(
                     str(item.transaction_id),
                     item.txn_date.isoformat(),
                     short_text(item.card_label, 14),
-                    short_text(item.merchant, 14),
+                    short_text(item.notes, 16),
                     format_inr(item.final_amount),
                     format_inr(item.cashback_amount),
                     format_inr(item.recoverable_amount),
@@ -138,7 +138,7 @@ async def card_summary_selected(
         lines.append("Recent 5 transactions:")
         lines.append(
             render_pre_table(
-                headers=["ID", "Date", "Card", "Merchant", "Total", "Cashbk", "Owes", "Pending"],
+                headers=["ID", "Date", "Card", "Notes", "Total", "Cashbk", "Owes", "Pending"],
                 rows=rows,
                 right_align_cols={0, 4, 5, 6, 7},
             )
@@ -242,11 +242,11 @@ async def _send_monthly_report(
         f"Net after cashback: {format_inr(report.net_payable)}",
         f"Amount owed by others: {format_inr(report.amount_owed_by_others)}",
         "",
-        "Top categories:",
+        "Top notes:",
     ]
 
-    if report.top_categories:
-        for name, total in report.top_categories:
+    if report.top_notes:
+        for name, total in report.top_notes:
             lines.append(f"- {name}: {format_inr(total)}")
     else:
         lines.append("- No data")

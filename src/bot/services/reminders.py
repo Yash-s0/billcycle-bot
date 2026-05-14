@@ -78,7 +78,7 @@ async def _build_reminder_message(session: AsyncSession, user: User, today: date
     for card in card_rows:
         due_date = get_next_due_date(card.due_day, today)
         days_left = (due_date - today).days
-        label = f"{card.bank_name}/{card.card_name} • ****{card.last_four} ({due_date.isoformat()})"
+        label = f"{card.bank_name}/{card.card_name} ({due_date.isoformat()})"
         if days_left == 0:
             due_today.append(label)
         elif days_left == 1:

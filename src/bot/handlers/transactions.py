@@ -23,7 +23,6 @@ from ..models import Card, Payment, ReimbursementStatus, Transaction
 from ..services.reports import RecentTransactionRow, format_inr, list_recent_transactions
 from ..states import AddTransactionStates, DeleteTransactionStates
 from .common import (
-    card_label,
     ensure_user,
     get_or_create_person,
     get_user_by_telegram_id,
@@ -146,8 +145,7 @@ async def add_txn_amount(message: Message, state: FSMContext) -> None:
 async def _open_add_txn_draft(message: Message, state: FSMContext, amount: Decimal) -> None:
     await state.update_data(
         amount=str(amount),
-        merchant=None,
-        category=None,
+        notes=None,
         txn_date=date.today().isoformat(),
         discount_amount="0",
         cashback_amount="0",
@@ -225,7 +223,7 @@ async def add_txn_draft_action(
         await _send_txn_draft_menu(callback.message, state)
         return
 
-    if action not in {"merchant", "category", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
+    if action not in {"notes", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
         await callback.answer("Unknown option", show_alert=True)
         return
 
@@ -280,13 +278,13 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
     raw = (message.text or "").strip()
     raw_lower = raw.lower()
 
-    if field not in {"merchant", "category", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
+    if field not in {"notes", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
         await state.set_state(AddTransactionStates.review)
         await message.answer("No field selected. Use the buttons below.")
         await _send_txn_draft_menu(message, state)
         return
 
-    if field in {"merchant", "category", "person_name"}:
+    if field in {"notes", "person_name"}:
         value = None if raw_lower == "skip" or not raw else raw
         if field == "person_name" and bool(data.get("is_for_someone_else", False)) and not value:
             await message.answer("Person name cannot be empty for 'For Someone Else'. Enter a name:")
@@ -338,10 +336,8 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
 
 
 def _prompt_for_optional_field(field: str) -> str:
-    if field == "merchant":
-        return "Send merchant name (or send 'skip' to clear it):"
-    if field == "category":
-        return "Send category (or send 'skip' to clear it):"
+    if field == "notes":
+        return "Send notes (or send 'skip' to clear it):"
     if field == "txn_date":
         return "Send transaction date in YYYY-MM-DD (or send 'skip' for today):"
     if field == "discount_amount":
@@ -373,8 +369,7 @@ async def _send_txn_draft_menu(message: Message, state: FSMContext) -> None:
         "Transaction draft\n"
         f"Card: {data.get('card_label', '-')}\n"
         f"Amount: {format_inr(amount)}\n"
-        f"Merchant: {data.get('merchant') or '-'}\n"
-        f"Category: {data.get('category') or '-'}\n"
+        f"Notes: {data.get('notes') or '-'}\n"
         f"Date: {data.get('txn_date', '-')}\n"
         f"Discount: {format_inr(discount_amount)}\n"
         f"Cashback: {format_inr(cashback_amount)}\n"
@@ -460,13 +455,11 @@ async def _persist_transaction(
             discount_amount=discount_amount,
             cashback_amount=cashback_amount,
             final_amount=final_amount,
-            merchant=data.get("merchant"),
-            category=data.get("category"),
             txn_date=txn_date,
             is_for_someone_else=bool(data.get("is_for_someone_else", False)),
             person_id=person_id,
             reimbursement_status=status,
-            notes=None,
+            notes=data.get("notes"),
         )
         session.add(txn)
         await session.flush()
@@ -527,13 +520,12 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
                 format_inr(txn.final_amount),
                 format_inr(txn.cashback_amount),
                 format_inr(owes_amount),
-                short_text(txn.merchant, 14),
-                short_text(txn.category, 12),
+                short_text(txn.notes, 18),
                 txn.reimbursement_status,
             ]
         )
     table = render_pre_table(
-        headers=["ID", "Date", "Card", "Total", "Cashbk", "Owes", "Merchant", "Category", "Status"],
+        headers=["ID", "Date", "Card", "Total", "Cashbk", "Owes", "Notes", "Status"],
         rows=rows,
         right_align_cols={0, 3, 4, 5},
     )
@@ -681,8 +673,7 @@ async def delete_txn_menu_action(
             "Confirm delete this transaction?\n"
             f"ID: {txn.id}\n"
             f"Date: {txn.txn_date.isoformat()}\n"
-            f"Amount: {format_inr(txn.final_amount)}\n"
-            f"Merchant: {txn.merchant or '-'}",
+            f"Amount: {format_inr(txn.final_amount)}",
             reply_markup=delete_transaction_confirm_keyboard(),
         )
         _reset_delete_txn_timeout(callback.message)

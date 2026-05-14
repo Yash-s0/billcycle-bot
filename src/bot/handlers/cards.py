@@ -51,18 +51,6 @@ async def add_card_card_name(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(card_name=value)
-    await state.set_state(AddCardStates.last_four)
-    await message.answer("Enter last 4 digits of the card:")
-
-
-@router.message(AddCardStates.last_four)
-async def add_card_last_four(message: Message, state: FSMContext) -> None:
-    value = (message.text or "").strip()
-    if len(value) != 4 or not value.isdigit():
-        await message.answer("Last four must be exactly 4 digits. Enter again:")
-        return
-
-    await state.update_data(last_four=value)
     await state.set_state(AddCardStates.billing_day)
     await message.answer("Enter billing day of month (1-31):")
 
@@ -169,7 +157,6 @@ async def _save_card(
         user_id=int(data["user_id"]),
         bank_name=str(data["bank_name"]),
         card_name=str(data["card_name"]),
-        last_four=str(data["last_four"]),
         billing_day=int(data["billing_day"]),
         due_day=int(data["due_day"]),
         credit_limit=data.get("credit_limit"),
@@ -181,7 +168,7 @@ async def _save_card(
         await session.commit()
 
     await state.clear()
-    await message.answer(f"Card saved: {card.bank_name}/{card.card_name} • ****{card.last_four}")
+    await message.answer(f"Card saved: {card.bank_name}/{card.card_name}")
 
 
 @router.message(Command("list_cards"))
@@ -210,7 +197,7 @@ async def list_cards_command(message: Message, session_maker: async_sessionmaker
     lines = ["Your cards:"]
     for card in cards:
         lines.append(
-            f"- ID {card.id}: {card.bank_name}/{card.card_name} • ****{card.last_four} "
+            f"- ID {card.id}: {card.bank_name}/{card.card_name} "
             f"(Billing {card.billing_day}, Due {card.due_day})"
         )
     await message.answer("\n".join(lines))

@@ -13,7 +13,7 @@ from ..models import Card, Person, User
 
 
 def card_label(card: Card) -> str:
-    return f"{card.bank_name}/{card.card_name} • ****{card.last_four}"
+    return f"{card.bank_name}/{card.card_name}"
 
 
 def short_text(value: str | None, max_len: int = 16) -> str:

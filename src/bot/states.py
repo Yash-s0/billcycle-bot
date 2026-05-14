@@ -4,7 +4,6 @@ from aiogram.fsm.state import State, StatesGroup
 class AddCardStates(StatesGroup):
     bank_name = State()
     card_name = State()
-    last_four = State()
     billing_day = State()
     due_day = State()
     credit_limit = State()

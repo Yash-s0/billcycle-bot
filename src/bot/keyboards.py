@@ -57,8 +57,7 @@ def months_keyboard(months: Sequence[date], include_current_shortcut: bool = Tru
 
 def txn_draft_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="Merchant", callback_data="txn_opt:merchant")
-    builder.button(text="Category", callback_data="txn_opt:category")
+    builder.button(text="Notes", callback_data="txn_opt:notes")
     builder.button(text="Date", callback_data="txn_opt:txn_date")
     builder.button(text="Discount", callback_data="txn_opt:discount_amount")
     builder.button(text="Cashback", callback_data="txn_opt:cashback_amount")
@@ -68,7 +67,7 @@ def txn_draft_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
         builder.button(text="Paid Back?", callback_data="txn_opt:toggle_paid")
     builder.button(text="Save Transaction", callback_data="txn_opt:save")
     builder.button(text="Cancel", callback_data="txn_opt:cancel")
-    builder.adjust(2, 2, 2, 2, 2)
+    builder.adjust(2, 2, 2, 2, 1)
     return builder.as_markup()
 
 

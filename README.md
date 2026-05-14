@@ -72,7 +72,7 @@ Note: The app also tries to run `alembic upgrade head` on startup, and falls bac
 
 `/add_txn` behavior notes:
 - asks only card + amount upfront, then shows inline buttons for optional fields
-- lets you fill only needed fields (merchant/category/date/discount/cashback/reimbursement)
+- lets you fill only needed fields (notes/date/discount/cashback/reimbursement)
 - when no flow is active, sending a plain amount (for example `250` or `1,299.50`) auto-starts add transaction
 - stores both in DB (`discount_amount`, `cashback_amount`)
 - uses `total = amount - discount`
@@ -95,7 +95,7 @@ A daily scheduler runs at `09:00` in `TIMEZONE` and sends reminders for:
 - Full card numbers are never requested or stored.
 - CVV, PIN, OTP, expiry, and passwords are never requested or stored.
 - Every query is scoped by the current Telegram user.
-- The bot displays card labels using only bank/card nickname and last 4 digits.
+- The bot displays card labels using only bank/card nickname.
 
 ## Project structure
 

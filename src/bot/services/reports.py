@@ -29,7 +29,7 @@ class PendingTransactionItem:
     transaction_id: int
     card_label: str
     txn_date: date
-    merchant: str
+    notes: str
     final_amount: Decimal
     cashback_amount: Decimal
     recoverable_amount: Decimal
@@ -68,7 +68,7 @@ class MonthlyReportData:
     total_cashback: Decimal
     net_payable: Decimal
     amount_owed_by_others: Decimal
-    top_categories: list[tuple[str, Decimal]]
+    top_notes: list[tuple[str, Decimal]]
     card_breakdown: list[CardBreakdownItem]
 
 
@@ -81,8 +81,7 @@ class RecentTransactionRow:
     discount_amount: Decimal
     cashback_amount: Decimal
     final_amount: Decimal
-    merchant: str
-    category: str
+    notes: str
     reimbursement_status: str
     is_for_someone_else: bool
     person_name: str | None
@@ -151,8 +150,7 @@ async def list_recent_transactions(
                 discount_amount=txn.discount_amount,
                 cashback_amount=txn.cashback_amount,
                 final_amount=txn.final_amount,
-                merchant=txn.merchant or "-",
-                category=txn.category or "-",
+                notes=txn.notes or "-",
                 reimbursement_status=txn.reimbursement_status.value,
                 is_for_someone_else=bool(txn.is_for_someone_else),
                 person_name=person_name,
@@ -256,7 +254,7 @@ async def pending_transactions_for_person(
                 transaction_id=txn.id,
                 card_label=card_name,
                 txn_date=txn.txn_date,
-                merchant=txn.merchant or "-",
+                notes=txn.notes or "-",
                 final_amount=_to_decimal(txn.final_amount),
                 cashback_amount=_to_decimal(txn.cashback_amount),
                 recoverable_amount=recoverable_amount,
@@ -346,7 +344,7 @@ async def get_card_summary_data(
                     transaction_id=txn.id,
                     card_label=card.card_name,
                     txn_date=txn.txn_date,
-                    merchant=txn.merchant or "-",
+                    notes=txn.notes or "-",
                     final_amount=_to_decimal(txn.final_amount),
                     cashback_amount=_to_decimal(txn.cashback_amount),
                     recoverable_amount=recoverable_amount,
@@ -419,9 +417,9 @@ async def get_monthly_report_data(
             outstanding = max(ZERO, recoverable_amount - paid_amount)
             amount_owed_by_others += outstanding
 
-    category_query = (
+    notes_query = (
         select(
-            func.coalesce(Transaction.category, "Uncategorized").label("category"),
+            func.coalesce(Transaction.notes, "No notes").label("notes"),
             func.coalesce(func.sum(Transaction.final_amount), 0).label("total"),
         )
         .where(
@@ -429,13 +427,13 @@ async def get_monthly_report_data(
             Transaction.txn_date >= month_start,
             Transaction.txn_date <= month_end,
         )
-        .group_by(func.coalesce(Transaction.category, "Uncategorized"))
+        .group_by(func.coalesce(Transaction.notes, "No notes"))
         .order_by(func.sum(Transaction.final_amount).desc())
         .limit(5)
     )
-    top_categories = [
+    top_notes = [
         (name, _to_decimal(total))
-        for name, total in (await session.execute(category_query)).all()
+        for name, total in (await session.execute(notes_query)).all()
     ]
 
     card_query = (
@@ -477,7 +475,7 @@ async def get_monthly_report_data(
         total_cashback=total_cashback,
         net_payable=net_payable,
         amount_owed_by_others=amount_owed_by_others,
-        top_categories=top_categories,
+        top_notes=top_notes,
         card_breakdown=card_breakdown,
     )
 
