@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
@@ -39,8 +39,16 @@ DELETE_TXN_IDLE_SECONDS = 300
 _delete_txn_timeout_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
 
 
-@router.message(Command("add_txn"))
-async def add_txn_command(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+def _txn_card_picker_label(card: Card) -> str:
+    return card.card_name
+
+
+async def _start_add_txn_card_selection(
+    message: Message,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+    prefill_amount: Decimal | None = None,
+) -> None:
     if not message.from_user:
         return
 
@@ -58,11 +66,39 @@ async def add_txn_command(message: Message, state: FSMContext, session_maker: as
         await message.answer("No cards found. Add a card first with /add_card.")
         return
 
-    card_rows = [(card.id, card_label(card)) for card in cards]
+    card_rows = [(card.id, _txn_card_picker_label(card)) for card in cards]
     await state.clear()
     await state.set_state(AddTransactionStates.card)
-    await state.update_data(user_id=user.id)
-    await message.answer("Select card:", reply_markup=cards_keyboard(card_rows))
+    await state.update_data(
+        user_id=user.id,
+        prefill_amount=str(prefill_amount) if prefill_amount is not None else None,
+    )
+    prompt = "Select card:"
+    if prefill_amount is not None:
+        prompt = f"Amount detected: {format_inr(prefill_amount)}\nSelect card:"
+    await message.answer(prompt, reply_markup=cards_keyboard(card_rows))
+
+
+@router.message(Command("add_txn"))
+async def add_txn_command(message: Message, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    await _start_add_txn_card_selection(message, state, session_maker=session_maker)
+
+
+@router.message(StateFilter(None), F.text.regexp(r"^\s*\d[\d,]*(\.\d+)?\s*$"))
+async def quick_add_txn_amount_trigger(
+    message: Message,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    amount = parse_positive_decimal(message.text or "")
+    if amount is None:
+        return
+    await _start_add_txn_card_selection(
+        message,
+        state,
+        session_maker=session_maker,
+        prefill_amount=amount,
+    )
 
 
 @router.callback_query(AddTransactionStates.card, F.data.startswith("card:"))
@@ -83,9 +119,18 @@ async def add_txn_select_card(callback: CallbackQuery, state: FSMContext, sessio
         return
 
     await callback.answer()
-    await state.update_data(card_id=card.id, card_label=card_label(card))
+    selected_card_label = _txn_card_picker_label(card)
+    await state.update_data(card_id=card.id, card_label=selected_card_label)
+    prefill_amount_raw = data.get("prefill_amount")
+    if prefill_amount_raw is not None:
+        prefill_amount = parse_positive_decimal(str(prefill_amount_raw))
+        if prefill_amount is not None:
+            await callback.message.answer(f"Selected: {selected_card_label}")
+            await _open_add_txn_draft(callback.message, state, prefill_amount)
+            return
+
     await state.set_state(AddTransactionStates.amount)
-    await callback.message.answer(f"Selected: {card_label(card)}\nEnter amount:")
+    await callback.message.answer(f"Selected: {selected_card_label}\nEnter amount:")
 
 
 @router.message(AddTransactionStates.amount)
@@ -95,6 +140,10 @@ async def add_txn_amount(message: Message, state: FSMContext) -> None:
         await message.answer("Amount must be a positive number. Enter amount:")
         return
 
+    await _open_add_txn_draft(message, state, amount)
+
+
+async def _open_add_txn_draft(message: Message, state: FSMContext, amount: Decimal) -> None:
     await state.update_data(
         amount=str(amount),
         merchant=None,
@@ -106,6 +155,7 @@ async def add_txn_amount(message: Message, state: FSMContext) -> None:
         reimbursement_status=ReimbursementStatus.OWN.value,
         person_name=None,
         pending_field=None,
+        prefill_amount=None,
     )
     await state.set_state(AddTransactionStates.review)
     await _send_txn_draft_menu(message, state)
