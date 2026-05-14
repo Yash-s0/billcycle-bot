@@ -77,6 +77,12 @@ Note: The app also tries to run `alembic upgrade head` on startup, and falls bac
 - uses `total = amount - discount`
 - uses `owes = total - cashback` for reimbursements
 
+`/delete_txn` behavior notes:
+- shows recent transactions as inline buttons (7 at a time)
+- includes `Next/Previous` pagination and inline confirm before delete
+- button label format: `date | amount` (or `date | amount | person` for reimbursements)
+- delete keyboards auto-expire (buttons removed) after 5 minutes of inactivity
+
 ## Reminder behavior
 A daily scheduler runs at `09:00` in `TIMEZONE` and sends reminders for:
 - cards due in 3 days

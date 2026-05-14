@@ -88,3 +88,37 @@ def txn_recent_dates_keyboard(days: int = 7) -> InlineKeyboardMarkup:
     builder.button(text="Back", callback_data="txn_datepick:back")
     builder.adjust(2, 2, 2, 1, 2)
     return builder.as_markup()
+
+
+def delete_transactions_keyboard(
+    transactions: Sequence[tuple[int, str]],
+    prev_offset: int | None,
+    next_offset: int | None,
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for txn_id, label in transactions:
+        builder.button(text=label, callback_data=f"delpick:txn:{txn_id}")
+
+    nav_count = 0
+    if prev_offset is not None:
+        builder.button(text="Previous", callback_data=f"delpick:page:{prev_offset}")
+        nav_count += 1
+    if next_offset is not None:
+        builder.button(text="Next", callback_data=f"delpick:page:{next_offset}")
+        nav_count += 1
+    builder.button(text="Cancel", callback_data="delpick:cancel")
+
+    row_sizes: list[int] = [1] * len(transactions)
+    if nav_count > 0:
+        row_sizes.append(nav_count)
+    row_sizes.append(1)
+    builder.adjust(*row_sizes)
+    return builder.as_markup()
+
+
+def delete_transaction_confirm_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Yes, Delete", callback_data="delpick:confirm:yes")
+    builder.button(text="No", callback_data="delpick:confirm:no")
+    builder.adjust(2)
+    return builder.as_markup()

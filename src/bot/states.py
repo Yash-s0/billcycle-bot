@@ -26,7 +26,7 @@ class MarkPaidStates(StatesGroup):
 
 
 class DeleteTransactionStates(StatesGroup):
-    transaction_id = State()
+    menu = State()
     confirm = State()
 
 

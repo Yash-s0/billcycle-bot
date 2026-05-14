@@ -84,6 +84,8 @@ class RecentTransactionRow:
     merchant: str
     category: str
     reimbursement_status: str
+    is_for_someone_else: bool
+    person_name: str | None
 
 
 def _to_decimal(value: Decimal | int | float | None) -> Decimal:
@@ -125,17 +127,20 @@ async def list_recent_transactions(
     session: AsyncSession,
     user_id: int,
     limit: int = 10,
+    offset: int = 0,
 ) -> list[RecentTransactionRow]:
     query = (
-        select(Transaction, Card.card_name)
+        select(Transaction, Card.card_name, Person.name)
         .join(Card, Transaction.card_id == Card.id)
+        .outerjoin(Person, Person.id == Transaction.person_id)
         .where(Transaction.user_id == user_id)
         .order_by(Transaction.txn_date.desc(), Transaction.id.desc())
+        .offset(max(offset, 0))
         .limit(limit)
     )
     rows = (await session.execute(query)).all()
     result: list[RecentTransactionRow] = []
-    for txn, card_name in rows:
+    for txn, card_name, person_name in rows:
         card_label = card_name
         result.append(
             RecentTransactionRow(
@@ -149,6 +154,8 @@ async def list_recent_transactions(
                 merchant=txn.merchant or "-",
                 category=txn.category or "-",
                 reimbursement_status=txn.reimbursement_status.value,
+                is_for_someone_else=bool(txn.is_for_someone_else),
+                person_name=person_name,
             )
         )
     return result

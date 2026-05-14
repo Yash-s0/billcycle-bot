@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -11,9 +12,15 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..keyboards import cards_keyboard, txn_draft_keyboard, txn_recent_dates_keyboard, yes_no_keyboard
+from ..keyboards import (
+    cards_keyboard,
+    delete_transaction_confirm_keyboard,
+    delete_transactions_keyboard,
+    txn_draft_keyboard,
+    txn_recent_dates_keyboard,
+)
 from ..models import Card, Payment, ReimbursementStatus, Transaction
-from ..services.reports import format_inr, list_recent_transactions
+from ..services.reports import RecentTransactionRow, format_inr, list_recent_transactions
 from ..states import AddTransactionStates, DeleteTransactionStates
 from .common import (
     card_label,
@@ -27,6 +34,9 @@ from .common import (
 )
 
 router = Router(name=__name__)
+DELETE_TXN_PAGE_SIZE = 7
+DELETE_TXN_IDLE_SECONDS = 300
+_delete_txn_timeout_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
 
 
 @router.message(Command("add_txn"))
@@ -486,76 +496,152 @@ async def delete_txn_command(message: Message, state: FSMContext, session_maker:
     if not message.from_user:
         return
 
+    existing_data = await state.get_data()
+    old_chat_id = existing_data.get("delete_menu_chat_id")
+    old_message_id = existing_data.get("delete_menu_message_id")
+    if old_chat_id and old_message_id:
+        _cancel_delete_txn_timeout(int(old_chat_id), int(old_message_id))
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=int(old_chat_id),
+                message_id=int(old_message_id),
+                reply_markup=None,
+            )
+        except TelegramBadRequest:
+            pass
+
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
             await message.answer("No profile found. Use /start first.")
             return
 
-        recent = await list_recent_transactions(session, user.id, limit=10)
+        page_rows = await list_recent_transactions(
+            session,
+            user.id,
+            limit=DELETE_TXN_PAGE_SIZE + 1,
+            offset=0,
+        )
 
-    if not recent:
+    if not page_rows:
         await message.answer("No transactions to delete.")
         return
 
-    rows: list[list[str]] = []
-    for txn in recent:
-        owes_amount = txn.final_amount - txn.cashback_amount
-        rows.append(
-            [
-                str(txn.transaction_id),
-                txn.txn_date.isoformat(),
-                short_text(txn.card_label, 14),
-                format_inr(txn.final_amount),
-                format_inr(txn.cashback_amount),
-                format_inr(owes_amount),
-            ]
-        )
-
     await state.clear()
-    await state.set_state(DeleteTransactionStates.transaction_id)
-    await state.update_data(user_id=user.id)
-    table = render_pre_table(
-        headers=["ID", "Date", "Card", "Total", "Cashbk", "Owes"],
-        rows=rows,
-        right_align_cols={0, 3, 4, 5},
+    await state.set_state(DeleteTransactionStates.menu)
+
+    visible_rows = page_rows[:DELETE_TXN_PAGE_SIZE]
+    next_offset = DELETE_TXN_PAGE_SIZE if len(page_rows) > DELETE_TXN_PAGE_SIZE else None
+    buttons = [(txn.transaction_id, _delete_txn_button_label(txn)) for txn in visible_rows]
+
+    sent = await message.answer(
+        _delete_txn_page_text(offset=0, shown_count=len(visible_rows)),
+        reply_markup=delete_transactions_keyboard(buttons, prev_offset=None, next_offset=next_offset),
     )
-    await message.answer(f"Recent transactions:\n{table}\n\nEnter transaction ID to delete:")
+    await state.update_data(
+        user_id=user.id,
+        delete_menu_chat_id=sent.chat.id,
+        delete_menu_message_id=sent.message_id,
+        delete_offset=0,
+    )
+    _reset_delete_txn_timeout(sent)
 
 
-@router.message(DeleteTransactionStates.transaction_id)
-async def delete_txn_id_step(
-    message: Message,
+@router.callback_query(DeleteTransactionStates.menu, F.data.startswith("delpick:"))
+async def delete_txn_menu_action(
+    callback: CallbackQuery,
     state: FSMContext,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
-    raw = (message.text or "").strip()
-    if not raw.isdigit():
-        await message.answer("Transaction ID must be numeric. Enter transaction ID:")
+    if not callback.message:
         return
 
-    txn_id = int(raw)
+    parts = callback.data.split(":", maxsplit=2)
+    if len(parts) < 2:
+        await callback.answer("Invalid action", show_alert=True)
+        return
+
+    action = parts[1]
+    value = parts[2] if len(parts) > 2 else ""
     data = await state.get_data()
     user_id = int(data["user_id"])
 
-    async with session_maker() as session:
-        txn = await session.scalar(
-            select(Transaction).where(Transaction.id == txn_id, Transaction.user_id == user_id)
-        )
-
-    if not txn:
-        await message.answer("Transaction not found for your account. Enter a valid transaction ID:")
+    if action == "cancel":
+        await callback.answer("Cancelled")
+        await state.clear()
+        _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
+        try:
+            await callback.message.edit_text("Delete cancelled.", reply_markup=None)
+        except TelegramBadRequest:
+            await callback.message.answer("Delete cancelled.")
         return
 
-    await state.update_data(transaction_id=txn.id)
-    await state.set_state(DeleteTransactionStates.confirm)
-    await message.answer(
-        f"Confirm delete transaction ID {txn.id} ({txn.txn_date.isoformat()}, {format_inr(txn.final_amount)})?",
-        reply_markup=yes_no_keyboard("del_txn"),
-    )
+    if action == "page":
+        if not value.isdigit():
+            await callback.answer("Invalid page", show_alert=True)
+            return
+        next_page_offset = int(value)
+        async with session_maker() as session:
+            page_rows = await list_recent_transactions(
+                session,
+                user_id,
+                limit=DELETE_TXN_PAGE_SIZE + 1,
+                offset=next_page_offset,
+            )
+        if not page_rows:
+            await callback.answer("No more transactions.", show_alert=True)
+            return
+
+        visible_rows = page_rows[:DELETE_TXN_PAGE_SIZE]
+        has_more = len(page_rows) > DELETE_TXN_PAGE_SIZE
+        prev_offset = next_page_offset - DELETE_TXN_PAGE_SIZE if next_page_offset > 0 else None
+        upcoming_offset = next_page_offset + DELETE_TXN_PAGE_SIZE if has_more else None
+        buttons = [(txn.transaction_id, _delete_txn_button_label(txn)) for txn in visible_rows]
+
+        await callback.answer()
+        await callback.message.edit_text(
+            _delete_txn_page_text(offset=next_page_offset, shown_count=len(visible_rows)),
+            reply_markup=delete_transactions_keyboard(
+                buttons,
+                prev_offset=prev_offset,
+                next_offset=upcoming_offset,
+            ),
+        )
+        await state.update_data(delete_offset=next_page_offset)
+        _reset_delete_txn_timeout(callback.message)
+        return
+
+    if action == "txn":
+        if not value.isdigit():
+            await callback.answer("Invalid transaction", show_alert=True)
+            return
+        txn_id = int(value)
+        async with session_maker() as session:
+            txn = await session.scalar(
+                select(Transaction).where(Transaction.id == txn_id, Transaction.user_id == user_id)
+            )
+        if not txn:
+            await callback.answer("Transaction not found", show_alert=True)
+            return
+
+        await state.update_data(transaction_id=txn.id)
+        await state.set_state(DeleteTransactionStates.confirm)
+        await callback.answer()
+        await callback.message.edit_text(
+            "Confirm delete this transaction?\n"
+            f"ID: {txn.id}\n"
+            f"Date: {txn.txn_date.isoformat()}\n"
+            f"Amount: {format_inr(txn.final_amount)}\n"
+            f"Merchant: {txn.merchant or '-'}",
+            reply_markup=delete_transaction_confirm_keyboard(),
+        )
+        _reset_delete_txn_timeout(callback.message)
+        return
+
+    await callback.answer("Unknown action", show_alert=True)
 
 
-@router.callback_query(DeleteTransactionStates.confirm, F.data.startswith("del_txn:"))
+@router.callback_query(DeleteTransactionStates.confirm, F.data.startswith("delpick:confirm:"))
 async def delete_txn_confirm(
     callback: CallbackQuery,
     state: FSMContext,
@@ -565,11 +651,15 @@ async def delete_txn_confirm(
         return
 
     await callback.answer()
-    choice = callback.data.split(":", maxsplit=1)[1]
+    choice = callback.data.split(":", maxsplit=2)[2]
 
     if choice == "no":
+        _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
         await state.clear()
-        await callback.message.answer("Delete cancelled.")
+        try:
+            await callback.message.edit_text("Delete cancelled.", reply_markup=None)
+        except TelegramBadRequest:
+            await callback.message.answer("Delete cancelled.")
         return
 
     data = await state.get_data()
@@ -581,12 +671,65 @@ async def delete_txn_confirm(
             select(Transaction).where(Transaction.id == txn_id, Transaction.user_id == user_id)
         )
         if not txn:
+            _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
             await state.clear()
-            await callback.message.answer("Transaction not found. Nothing deleted.")
+            try:
+                await callback.message.edit_text("Transaction not found. Nothing deleted.", reply_markup=None)
+            except TelegramBadRequest:
+                await callback.message.answer("Transaction not found. Nothing deleted.")
             return
 
         await session.delete(txn)
         await session.commit()
 
+    _cancel_delete_txn_timeout(callback.message.chat.id, callback.message.message_id)
     await state.clear()
-    await callback.message.answer(f"Deleted transaction ID {txn_id}.")
+    try:
+        await callback.message.edit_text(f"Deleted transaction ID {txn_id}.", reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer(f"Deleted transaction ID {txn_id}.")
+
+
+def _delete_txn_button_label(txn: RecentTransactionRow) -> str:
+    label = f"{txn.txn_date.isoformat()} | {format_inr(txn.final_amount)}"
+    if txn.is_for_someone_else and txn.person_name:
+        return f"{label} | {short_text(txn.person_name, 14)}"
+    return label
+
+
+def _delete_txn_page_text(offset: int, shown_count: int) -> str:
+    start_idx = offset + 1
+    end_idx = offset + shown_count
+    return (
+        "Select a transaction to delete.\n"
+        f"Showing {start_idx}-{end_idx}.\n"
+        "Buttons auto-expire in 5 minutes."
+    )
+
+
+def _reset_delete_txn_timeout(message: Message) -> None:
+    chat_id = message.chat.id
+    message_id = message.message_id
+    key = (chat_id, message_id)
+    _cancel_delete_txn_timeout(chat_id, message_id)
+    _delete_txn_timeout_tasks[key] = asyncio.create_task(
+        _expire_delete_txn_keyboard(message.bot, chat_id, message_id)
+    )
+
+
+def _cancel_delete_txn_timeout(chat_id: int, message_id: int) -> None:
+    key = (chat_id, message_id)
+    task = _delete_txn_timeout_tasks.pop(key, None)
+    if task:
+        task.cancel()
+
+
+async def _expire_delete_txn_keyboard(bot: object, chat_id: int, message_id: int) -> None:
+    key = (chat_id, message_id)
+    try:
+        await asyncio.sleep(DELETE_TXN_IDLE_SECONDS)
+        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except (TelegramBadRequest, asyncio.CancelledError):
+        return
+    finally:
+        _delete_txn_timeout_tasks.pop(key, None)
