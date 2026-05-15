@@ -21,11 +21,15 @@ def skip_keyboard(prefix: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def cards_keyboard(cards: Sequence[tuple[int, str]], prefix: str = "card") -> InlineKeyboardMarkup:
+def cards_keyboard(
+    cards: Sequence[tuple[int, str]],
+    prefix: str = "card",
+    columns: int = 1,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for card_id, label in cards:
         builder.button(text=label, callback_data=f"{prefix}:{card_id}")
-    builder.adjust(1)
+    builder.adjust(max(columns, 1))
     return builder.as_markup()
 
 

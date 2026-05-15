@@ -204,7 +204,7 @@ async def manage_cards_command(message: Message, state: FSMContext, session_make
     await state.clear()
     await state.set_state(EditCardStates.card)
     await state.update_data(user_id=user.id)
-    await message.answer("🧩 Select a card to manage:", reply_markup=cards_keyboard(rows))
+    await message.answer("🧩 Select a card to manage:", reply_markup=cards_keyboard(rows, columns=2))
 
 
 @router.callback_query(EditCardStates.card, F.data.startswith("card:"))

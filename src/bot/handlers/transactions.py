@@ -229,7 +229,7 @@ async def add_txn_select_mode(callback: CallbackQuery, state: FSMContext, sessio
         card_rows = [(card.id, _txn_card_picker_label(card)) for card in cards]
         await callback.answer()
         await state.set_state(AddTransactionStates.card)
-        await callback.message.answer("💳 Select card:", reply_markup=cards_keyboard(card_rows))
+        await callback.message.answer("💳 Select card:", reply_markup=cards_keyboard(card_rows, columns=2))
         return
 
     prefill_amount_raw = data.get("prefill_amount")

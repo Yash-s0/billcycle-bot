@@ -170,7 +170,7 @@ async def _show_card_bill_overview(
     await state.clear()
     await state.set_state(MarkPaidStates.card)
     await state.update_data(user_id=user.id)
-    await message.answer("\n".join(lines), reply_markup=cards_keyboard(rows, prefix="bill_card"))
+    await message.answer("\n".join(lines), reply_markup=cards_keyboard(rows, prefix="bill_card", columns=2))
 
 
 @router.message(Command("mark_paid"))
