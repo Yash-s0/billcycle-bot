@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
@@ -16,7 +16,9 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    Time,
     UniqueConstraint,
+    Index,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -50,6 +52,8 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255))
     username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reminders_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reminder_time: Mapped[time] = mapped_column(Time, default=lambda: time(hour=9, minute=0))
 
     cards: Mapped[list["Card"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     people: Mapped[list["Person"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -63,6 +67,14 @@ class User(Base):
         back_populates="added_by_user",
     )
     payments: Mapped[list["Payment"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    card_bill_payments: Mapped[list["CardBillPayment"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    reminder_deliveries: Mapped[list["ReminderDelivery"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     shared_expense_access_as_owner: Mapped[list["SharedExpenseAccess"]] = relationship(
         foreign_keys="SharedExpenseAccess.owner_user_id",
         back_populates="owner",
@@ -90,6 +102,7 @@ class Card(Base):
 
     user: Mapped[User] = relationship(back_populates="cards")
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="card")
+    bill_payments: Mapped[list["CardBillPayment"]] = relationship(back_populates="card", cascade="all, delete-orphan")
 
 
 class Person(Base):
@@ -180,3 +193,34 @@ class Payment(Base):
     user: Mapped[User] = relationship(back_populates="payments")
     transaction: Mapped[Transaction] = relationship(back_populates="payments")
     person: Mapped[Person] = relationship(back_populates="payments")
+
+
+class CardBillPayment(Base):
+    __tablename__ = "card_bill_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    card_id: Mapped[int] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
+    cycle_start: Mapped[date] = mapped_column(Date, index=True)
+    cycle_end: Mapped[date] = mapped_column(Date, index=True)
+    amount_paid: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="card_bill_payments")
+    card: Mapped[Card] = relationship(back_populates="bill_payments")
+
+
+class ReminderDelivery(Base):
+    __tablename__ = "reminder_deliveries"
+    __table_args__ = (
+        UniqueConstraint("user_id", "reminder_date", name="uq_reminder_deliveries_user_date"),
+        Index("ix_reminder_deliveries_reminder_date", "reminder_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    reminder_date: Mapped[date] = mapped_column(Date, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="reminder_deliveries")

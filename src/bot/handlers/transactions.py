@@ -67,9 +67,9 @@ async def _send_add_txn_mode_prompt(
     message: Message,
     prefill_amount: Decimal | None = None,
 ) -> None:
-    prompt = "Select payment mode:"
+    prompt = "💸 <b>Add Transaction</b>\nSelect payment mode:"
     if prefill_amount is not None:
-        prompt = f"Amount detected: {format_inr(prefill_amount)}\nSelect payment mode:"
+        prompt = f"💸 <b>Add Transaction</b>\nAmount detected: <b>{format_inr(prefill_amount)}</b>\nSelect payment mode:"
     await message.answer(prompt, reply_markup=txn_mode_keyboard("txn_mode"))
 
 
@@ -112,7 +112,7 @@ async def _start_add_txn_account_selection(
     for owner_user_id, owner_name in shared_owner_rows:
         account_rows.append((f"owner:{owner_user_id}", short_text(owner_name, 22)))
     await state.set_state(AddTransactionStates.account)
-    await message.answer("Add transaction for which account?", reply_markup=txn_account_keyboard(account_rows))
+    await message.answer("👤 Add transaction for which account?", reply_markup=txn_account_keyboard(account_rows))
 
 
 @router.message(Command("add_txn"))
@@ -155,7 +155,7 @@ async def add_txn_select_account(
     if choice == "cancel":
         await callback.answer("Cancelled")
         await state.clear()
-        await callback.message.answer("Add transaction cancelled.")
+        await callback.message.answer("❌ Add transaction cancelled.")
         return
 
     if choice == "self":
@@ -223,13 +223,13 @@ async def add_txn_select_mode(callback: CallbackQuery, state: FSMContext, sessio
             ).scalars().all()
         if not cards:
             await callback.answer("No cards found", show_alert=True)
-            await callback.message.answer("No cards found. Add a card first with /add_card.")
+            await callback.message.answer("📭 No cards found. Add a card first with <b>/add_card</b>.")
             return
 
         card_rows = [(card.id, _txn_card_picker_label(card)) for card in cards]
         await callback.answer()
         await state.set_state(AddTransactionStates.card)
-        await callback.message.answer("Select card:", reply_markup=cards_keyboard(card_rows))
+        await callback.message.answer("💳 Select card:", reply_markup=cards_keyboard(card_rows))
         return
 
     prefill_amount_raw = data.get("prefill_amount")
@@ -237,12 +237,12 @@ async def add_txn_select_mode(callback: CallbackQuery, state: FSMContext, sessio
     source_label = _payment_mode_label(selected_mode)
     await callback.answer()
     if prefill_amount is not None:
-        await callback.message.answer(f"Selected payment mode: {source_label}")
+        await callback.message.answer(f"✅ Selected payment mode: <b>{source_label}</b>")
         await _open_add_txn_draft(callback.message, state, prefill_amount)
         return
 
     await state.set_state(AddTransactionStates.amount)
-    await callback.message.answer(f"Selected payment mode: {source_label}\nEnter amount:")
+    await callback.message.answer(f"✅ Selected payment mode: <b>{source_label}</b>\nEnter amount:")
 
 
 @router.callback_query(AddTransactionStates.card, F.data.startswith("card:"))
@@ -273,19 +273,19 @@ async def add_txn_select_card(callback: CallbackQuery, state: FSMContext, sessio
     if prefill_amount_raw is not None:
         prefill_amount = parse_positive_decimal(str(prefill_amount_raw))
         if prefill_amount is not None:
-            await callback.message.answer(f"Selected: {selected_card_label}")
+            await callback.message.answer(f"✅ Selected: <b>{selected_card_label}</b>")
             await _open_add_txn_draft(callback.message, state, prefill_amount)
             return
 
     await state.set_state(AddTransactionStates.amount)
-    await callback.message.answer(f"Selected: {selected_card_label}\nEnter amount:")
+    await callback.message.answer(f"✅ Selected: <b>{selected_card_label}</b>\nEnter amount:")
 
 
 @router.message(AddTransactionStates.amount)
 async def add_txn_amount(message: Message, state: FSMContext) -> None:
     amount = parse_positive_decimal(message.text or "")
     if amount is None:
-        await message.answer("Amount must be a positive number. Enter amount:")
+        await message.answer("⚠️ Amount must be a positive number. Enter amount:")
         return
 
     await _open_add_txn_draft(message, state, amount)
@@ -329,14 +329,14 @@ async def add_txn_draft_action(
     if action == "cancel":
         await callback.answer("Cancelled")
         await state.clear()
-        await callback.message.answer("Transaction creation cancelled.")
+        await callback.message.answer("❌ Transaction creation cancelled.")
         return
 
     if action == "save":
         if is_for_someone_else and not str(data.get("person_name", "")).strip():
             await callback.answer("Add person name first", show_alert=True)
             await callback.message.answer(
-                "This is marked as 'for someone else'. Tap Person Name and add it before saving."
+                "This is marked as <b>for someone else</b>. Tap <b>Person Name</b> and add it before saving."
             )
             return
         await callback.answer()
@@ -385,7 +385,7 @@ async def add_txn_draft_action(
     await state.set_state(AddTransactionStates.input_optional)
     if action == "txn_date":
         await callback.message.answer(
-            "Pick transaction date (or use Custom Date):",
+            "📅 Pick transaction date (or use <b>Custom Date</b>):",
             reply_markup=txn_recent_dates_keyboard(days=7),
         )
         return
@@ -408,7 +408,7 @@ async def add_txn_pick_recent_date(callback: CallbackQuery, state: FSMContext) -
 
     if choice == "custom":
         await callback.answer()
-        await callback.message.answer("Send transaction date in YYYY-MM-DD (or send 'skip' for today):")
+        await callback.message.answer("🗓️ Send transaction date in <b>YYYY-MM-DD</b> (or send <b>skip</b> for today):")
         return
 
     try:
@@ -433,14 +433,14 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
 
     if field not in {"category", "notes", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
         await state.set_state(AddTransactionStates.review)
-        await message.answer("No field selected. Use the buttons below.")
+        await message.answer("⚠️ No field selected. Use the buttons below.")
         await _send_txn_draft_menu(message, state)
         return
 
     if field in {"category", "notes", "person_name"}:
         value = None if raw_lower == "skip" or not raw else raw
         if field == "person_name" and bool(data.get("is_for_someone_else", False)) and not value:
-            await message.answer("Person name cannot be empty for 'For Someone Else'. Enter a name:")
+            await message.answer("⚠️ Person name cannot be empty for <b>For Someone Else</b>. Enter a name:")
             return
         await state.update_data(**{field: value}, pending_field=None)
     elif field == "txn_date":
@@ -450,17 +450,17 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
             try:
                 txn_date = datetime.strptime(raw, "%Y-%m-%d").date()
             except ValueError:
-                await message.answer("Invalid date. Use YYYY-MM-DD, or send 'skip' for today:")
+                await message.answer("⚠️ Invalid date. Use <b>YYYY-MM-DD</b>, or send <b>skip</b> for today:")
                 return
         await state.update_data(txn_date=txn_date.isoformat(), pending_field=None)
     elif field == "discount_amount":
         discount = parse_non_negative_decimal(raw)
         if discount is None:
-            await message.answer("Discount must be a non-negative number. Enter discount amount:")
+            await message.answer("⚠️ Discount must be a non-negative number. Enter discount amount:")
             return
         amount = Decimal(str(data["amount"]))
         if discount > amount:
-            await message.answer("Discount cannot exceed amount. Enter discount amount again:")
+            await message.answer("⚠️ Discount cannot exceed amount. Enter discount amount again:")
             return
         cashback = Decimal(str(data.get("cashback_amount", "0")))
         final_amount = amount - discount
@@ -474,13 +474,13 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
     elif field == "cashback_amount":
         cashback = parse_non_negative_decimal(raw)
         if cashback is None:
-            await message.answer("Cashback must be a non-negative number. Enter cashback amount:")
+            await message.answer("⚠️ Cashback must be a non-negative number. Enter cashback amount:")
             return
         amount = Decimal(str(data["amount"]))
         discount = Decimal(str(data.get("discount_amount", "0")))
         final_amount = amount - discount
         if cashback > final_amount:
-            await message.answer("Cashback cannot exceed total after discount. Enter cashback again:")
+            await message.answer("⚠️ Cashback cannot exceed total after discount. Enter cashback again:")
             return
         await state.update_data(cashback_amount=str(cashback), pending_field=None)
 
@@ -490,18 +490,18 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
 
 def _prompt_for_optional_field(field: str) -> str:
     if field == "category":
-        return "Send category (or send 'skip' to clear it):"
+        return "🏷️ Send category (or send <b>skip</b> to clear it):"
     if field == "notes":
-        return "Send notes (or send 'skip' to clear it):"
+        return "📝 Send notes (or send <b>skip</b> to clear it):"
     if field == "txn_date":
-        return "Send transaction date in YYYY-MM-DD (or send 'skip' for today):"
+        return "📅 Send transaction date in <b>YYYY-MM-DD</b> (or send <b>skip</b> for today):"
     if field == "discount_amount":
-        return "Send discount amount (non-negative):"
+        return "💸 Send discount amount (non-negative):"
     if field == "cashback_amount":
-        return "Send cashback amount (non-negative):"
+        return "🎁 Send cashback amount (non-negative):"
     if field == "person_name":
-        return "Send person name (or send 'skip' to clear it):"
-    return "Send value:"
+        return "🙍 Send person name (or send <b>skip</b> to clear it):"
+    return "✍️ Send value:"
 
 
 async def _send_txn_draft_menu(message: Message, state: FSMContext) -> None:
@@ -531,33 +531,33 @@ async def _send_txn_draft_menu(message: Message, state: FSMContext) -> None:
     txn_date = str(data.get("txn_date") or "").strip()
 
     lines = [
-        "Transaction draft",
-        f"Account: {owner_label}",
-        f"Payment mode: {_payment_mode_label(payment_mode)}",
-        f"Source: {payment_source}",
-        f"Amount: {format_inr(amount)}",
+        "🧾 <b>Transaction Draft</b>",
+        f"👤 <b>Account:</b> {owner_label}",
+        f"💳 <b>Payment mode:</b> {_payment_mode_label(payment_mode)}",
+        f"🏷️ <b>Source:</b> {payment_source}",
+        f"💰 <b>Amount:</b> {format_inr(amount)}",
     ]
     if category:
-        lines.append(f"Category: {category}")
+        lines.append(f"🏷️ <b>Category:</b> {category}")
     if notes:
-        lines.append(f"Notes: {notes}")
+        lines.append(f"📝 <b>Notes:</b> {notes}")
     if txn_date:
-        lines.append(f"Date: {txn_date}")
+        lines.append(f"📅 <b>Date:</b> {txn_date}")
     if discount_amount > 0:
-        lines.append(f"Discount: {format_inr(discount_amount)}")
+        lines.append(f"💸 <b>Discount:</b> {format_inr(discount_amount)}")
     if cashback_amount > 0:
-        lines.append(f"Cashback: {format_inr(cashback_amount)}")
+        lines.append(f"🎁 <b>Cashback:</b> {format_inr(cashback_amount)}")
     if is_for_someone_else:
-        lines.append("For someone else: Yes")
+        lines.append("👥 <b>For someone else:</b> Yes")
         if person_name:
-            lines.append(f"Person: {person_name}")
-        lines.append(f"Reimbursement: {reimbursement_text}")
+            lines.append(f"🙍 <b>Person:</b> {person_name}")
+        lines.append(f"🔁 <b>Reimbursement:</b> {reimbursement_text}")
     lines.extend(
         [
-            f"Total after discount: {format_inr(final_amount)}",
-            f"Owes/Net after cashback: {format_inr(recoverable_amount)}",
+            f"✅ <b>Total after discount:</b> {format_inr(final_amount)}",
+            f"📉 <b>Owes/Net after cashback:</b> {format_inr(recoverable_amount)}",
             "",
-            "Use the buttons below to update only the fields you need, then Save Transaction.",
+            "Use the buttons below to update only the fields you need, then tap <b>Save Transaction</b>.",
         ]
     )
     draft_text = "\n".join(lines)
@@ -595,7 +595,7 @@ async def _persist_transaction(
     session_maker: async_sessionmaker[AsyncSession] | None,
 ) -> None:
     if session_maker is None:
-        await message.answer("Internal error while saving transaction. Please try /add_txn again.")
+        await message.answer("⚠️ Internal error while saving transaction. Please try <b>/add_txn</b> again.")
         await state.clear()
         return
 
@@ -606,7 +606,7 @@ async def _persist_transaction(
     raw_card_id = data.get("card_id")
     card_id = int(raw_card_id) if raw_card_id is not None else None
     if payment_mode == PaymentMode.CARD and card_id is None:
-        await message.answer("Select a card for card-mode transactions. Please try /add_txn again.")
+        await message.answer("⚠️ Select a card for card-mode transactions. Please try <b>/add_txn</b> again.")
         await state.clear()
         return
     amount = Decimal(str(data["amount"]))
@@ -615,11 +615,11 @@ async def _persist_transaction(
     final_amount = amount - discount_amount
 
     if final_amount < 0:
-        await message.answer("Final amount cannot be negative. Please try /add_txn again.")
+        await message.answer("⚠️ Final amount cannot be negative. Please try <b>/add_txn</b> again.")
         await state.clear()
         return
     if cashback_amount > final_amount:
-        await message.answer("Cashback cannot exceed total after discount. Please try /add_txn again.")
+        await message.answer("⚠️ Cashback cannot exceed total after discount. Please try <b>/add_txn</b> again.")
         await state.clear()
         return
 
@@ -635,7 +635,7 @@ async def _persist_transaction(
                 )
             )
             if not card:
-                await message.answer("Selected card was not found for this account. Please try /add_txn again.")
+                await message.answer("⚠️ Selected card was not found for this account. Please try <b>/add_txn</b> again.")
                 await state.clear()
                 return
 
@@ -643,7 +643,7 @@ async def _persist_transaction(
         if data.get("is_for_someone_else"):
             person_name = str(data.get("person_name") or "").strip()
             if not person_name:
-                await message.answer("Person name is required for reimbursements. Please use /add_txn again.")
+                await message.answer("⚠️ Person name is required for reimbursements. Please use <b>/add_txn</b> again.")
                 await state.clear()
                 return
             person = await get_or_create_person(session, owner_user_id, person_name)
@@ -688,12 +688,12 @@ async def _persist_transaction(
 
     await state.clear()
     await message.answer(
-        "Transaction saved.\n"
-        f"Total: {format_inr(final_amount)}\n"
-        f"Amount entered: {format_inr(amount)}\n"
-        f"Discount: {format_inr(discount_amount)}\n"
-        f"Cashback: {format_inr(cashback_amount)}\n"
-        f"Owes/Net after cashback: {format_inr(recoverable_amount)}"
+        "✅ <b>Transaction saved</b>\n"
+        f"💰 <b>Total:</b> {format_inr(final_amount)}\n"
+        f"💵 <b>Amount entered:</b> {format_inr(amount)}\n"
+        f"💸 <b>Discount:</b> {format_inr(discount_amount)}\n"
+        f"🎁 <b>Cashback:</b> {format_inr(cashback_amount)}\n"
+        f"📉 <b>Owes/Net after cashback:</b> {format_inr(recoverable_amount)}"
     )
 
 
@@ -705,20 +705,20 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
-            await message.answer("No profile found. Use /start first.")
+            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
 
         txns = await list_recent_transactions(session, user.id, limit=10)
 
     if not txns:
-        await message.answer("No transactions found. Use /add_txn.")
+        await message.answer("📭 No transactions found. Use <b>/add_txn</b>.")
         return
 
     own_txns = [txn for txn in txns if txn.owner_user_id == user.id and txn.added_by_user_id == user.id]
     added_by_others = [txn for txn in txns if txn.owner_user_id == user.id and txn.added_by_user_id != user.id]
     added_to_others = [txn for txn in txns if txn.owner_user_id != user.id and txn.added_by_user_id == user.id]
 
-    lines = ["Recent transactions:"]
+    lines = ["🧾 <b>Recent transactions</b>:"]
 
     def _append_txn_block(title: str, rows: list[RecentTransactionRow], include_owner: bool, include_adder: bool) -> None:
         if not rows:
@@ -747,9 +747,9 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
             lines.append(" | ".join(details))
             lines.append("")
 
-    _append_txn_block("Your transactions:", own_txns, include_owner=False, include_adder=False)
-    _append_txn_block("Added to your account by others:", added_by_others, include_owner=False, include_adder=True)
-    _append_txn_block("Transactions you added to others:", added_to_others, include_owner=True, include_adder=False)
+    _append_txn_block("👤 <b>Your transactions:</b>", own_txns, include_owner=False, include_adder=False)
+    _append_txn_block("🤝 <b>Added to your account by others:</b>", added_by_others, include_owner=False, include_adder=True)
+    _append_txn_block("🧾 <b>Transactions you added to others:</b>", added_to_others, include_owner=True, include_adder=False)
 
     if len(lines) == 1:
         # Fallback: if rows are somehow filtered out from all sections, show generic list.
@@ -775,19 +775,19 @@ async def edit_txn_command(message: Message, state: FSMContext, session_maker: a
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
-            await message.answer("No profile found. Use /start first.")
+            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
         txns = await list_recent_transactions(session, user.id, limit=10)
 
     if not txns:
-        await message.answer("No transactions found. Use /add_txn.")
+        await message.answer("📭 No transactions found. Use <b>/add_txn</b>.")
         return
 
     rows = [(txn.transaction_id, _txn_picker_button_label(txn)) for txn in txns]
     await state.clear()
     await state.set_state(EditTransactionStates.transaction)
     await state.update_data(user_id=user.id)
-    await message.answer("Select a transaction to edit:", reply_markup=edit_txn_select_keyboard(rows))
+    await message.answer("✏️ Select a transaction to edit:", reply_markup=edit_txn_select_keyboard(rows))
 
 
 @router.callback_query(EditTransactionStates.transaction, F.data.startswith("edit_txn_pick:"))
@@ -799,10 +799,10 @@ async def edit_txn_select(callback: CallbackQuery, state: FSMContext, session_ma
     raw = callback.data.split(":", maxsplit=1)[1]
     if raw == "cancel":
         await state.clear()
-        await callback.message.answer("Edit transaction cancelled.")
+        await callback.message.answer("❌ Edit transaction cancelled.")
         return
     if not raw.isdigit():
-        await callback.message.answer("Invalid transaction.")
+        await callback.message.answer("⚠️ Invalid transaction.")
         await state.clear()
         return
 
@@ -817,7 +817,7 @@ async def edit_txn_select(callback: CallbackQuery, state: FSMContext, session_ma
             )
         )
     if not txn:
-        await callback.message.answer("Transaction not found.")
+        await callback.message.answer("⚠️ Transaction not found.")
         await state.clear()
         return
 
@@ -838,12 +838,12 @@ async def edit_txn_action(callback: CallbackQuery, state: FSMContext, session_ma
 
     if action == "cancel":
         await state.clear()
-        await callback.message.answer("Edit transaction cancelled.")
+        await callback.message.answer("❌ Edit transaction cancelled.")
         return
     if action == "delete":
         await state.set_state(EditTransactionStates.confirm_delete)
         await callback.message.answer(
-            "Delete this transaction?",
+            "⚠️ <b>Delete this transaction?</b>",
             reply_markup=edit_confirm_delete_keyboard("edit_txn_delete"),
         )
         return
@@ -860,11 +860,11 @@ async def edit_txn_action(callback: CallbackQuery, state: FSMContext, session_ma
         )
     if not txn:
         await state.clear()
-        await callback.message.answer("Transaction not found.")
+        await callback.message.answer("⚠️ Transaction not found.")
         return
     await state.set_state(EditTransactionStates.field)
     await callback.message.answer(
-        "Choose what to update:",
+        "✏️ Choose what to update:",
         reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)),
     )
 
@@ -881,7 +881,7 @@ async def edit_txn_delete_confirm(
     choice = callback.data.split(":", maxsplit=1)[1]
     if choice == "no":
         await state.set_state(EditTransactionStates.action)
-        await callback.message.answer("Delete cancelled.", reply_markup=edit_action_keyboard("edit_txn_action"))
+        await callback.message.answer("✅ Delete cancelled.", reply_markup=edit_action_keyboard("edit_txn_action"))
         return
 
     data = await state.get_data()
@@ -896,13 +896,13 @@ async def edit_txn_delete_confirm(
         )
         if not txn:
             await state.clear()
-            await callback.message.answer("Transaction not found. Nothing deleted.")
+            await callback.message.answer("⚠️ Transaction not found. Nothing deleted.")
             return
         await session.delete(txn)
         await session.commit()
 
     await state.clear()
-    await callback.message.answer(f"Deleted transaction ID {txn_id}.")
+    await callback.message.answer(f"🗑️ Deleted transaction ID <b>{txn_id}</b>.")
 
 
 @router.callback_query(EditTransactionStates.field, F.data.startswith("edit_txn_field:"))
@@ -918,7 +918,7 @@ async def edit_txn_field_select(
 
     if field == "back":
         await state.set_state(EditTransactionStates.action)
-        await callback.message.answer("Back to actions.", reply_markup=edit_action_keyboard("edit_txn_action"))
+        await callback.message.answer("⬅️ Back to actions.", reply_markup=edit_action_keyboard("edit_txn_action"))
         return
 
     data = await state.get_data()
@@ -934,7 +934,7 @@ async def edit_txn_field_select(
         )
         if not txn:
             await state.clear()
-            await callback.message.answer("Transaction not found.")
+            await callback.message.answer("⚠️ Transaction not found.")
             return
 
         if field == "toggle_someone":
@@ -949,14 +949,14 @@ async def edit_txn_field_select(
             await session.commit()
             await session.refresh(txn)
             await callback.message.answer(
-                "Updated.\n" + _format_txn_summary(txn),
+                "✅ <b>Updated</b>\n" + _format_txn_summary(txn),
                 reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)),
             )
             return
 
         if field == "toggle_paid":
             if not txn.is_for_someone_else:
-                await callback.message.answer("Enable 'For Someone Else' first.")
+                await callback.message.answer("⚠️ Enable <b>For Someone Else</b> first.")
                 return
             txn.reimbursement_status = (
                 ReimbursementStatus.PENDING
@@ -966,7 +966,7 @@ async def edit_txn_field_select(
             await session.commit()
             await session.refresh(txn)
             await callback.message.answer(
-                "Updated.\n" + _format_txn_summary(txn),
+                "✅ <b>Updated</b>\n" + _format_txn_summary(txn),
                 reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)),
             )
             return
@@ -994,7 +994,7 @@ async def edit_txn_field_input(message: Message, state: FSMContext, session_make
         )
         if not txn:
             await state.clear()
-            await message.answer("Transaction not found.")
+            await message.answer("⚠️ Transaction not found.")
             return
 
         amount = Decimal(str(txn.amount))
@@ -1004,7 +1004,7 @@ async def edit_txn_field_input(message: Message, state: FSMContext, session_make
         if field == "amount":
             parsed = parse_positive_decimal(raw)
             if parsed is None:
-                await message.answer("Amount must be a positive number. Enter again:")
+                await message.answer("⚠️ Amount must be a positive number. Enter again:")
                 return
             amount = parsed
         elif field == "category":
@@ -1018,23 +1018,23 @@ async def edit_txn_field_input(message: Message, state: FSMContext, session_make
                 try:
                     txn.txn_date = datetime.strptime(raw, "%Y-%m-%d").date()
                 except ValueError:
-                    await message.answer("Invalid date. Use YYYY-MM-DD, or send 'skip' for today:")
+                    await message.answer("⚠️ Invalid date. Use <b>YYYY-MM-DD</b>, or send <b>skip</b> for today:")
                     return
         elif field == "discount_amount":
             parsed = parse_non_negative_decimal(raw)
             if parsed is None:
-                await message.answer("Discount must be non-negative. Enter again:")
+                await message.answer("⚠️ Discount must be non-negative. Enter again:")
                 return
             discount = parsed
         elif field == "cashback_amount":
             parsed = parse_non_negative_decimal(raw)
             if parsed is None:
-                await message.answer("Cashback must be non-negative. Enter again:")
+                await message.answer("⚠️ Cashback must be non-negative. Enter again:")
                 return
             cashback = parsed
         elif field == "person_name":
             if not txn.is_for_someone_else:
-                await message.answer("Enable 'For Someone Else' first.")
+                await message.answer("⚠️ Enable <b>For Someone Else</b> first.")
                 return
             if raw_lower == "skip" or not raw:
                 txn.person_id = None
@@ -1043,15 +1043,15 @@ async def edit_txn_field_input(message: Message, state: FSMContext, session_make
                 txn.person_id = person.id
         else:
             await state.set_state(EditTransactionStates.field)
-            await message.answer("Unknown field.", reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)))
+            await message.answer("⚠️ Unknown field.", reply_markup=edit_txn_fields_keyboard(bool(txn.is_for_someone_else)))
             return
 
         final_amount = amount - discount
         if final_amount < 0:
-            await message.answer("Discount cannot exceed amount. Enter again:")
+            await message.answer("⚠️ Discount cannot exceed amount. Enter again:")
             return
         if cashback > final_amount:
-            await message.answer("Cashback cannot exceed total after discount. Enter again:")
+            await message.answer("⚠️ Cashback cannot exceed total after discount. Enter again:")
             return
 
         txn.amount = amount
@@ -1071,7 +1071,7 @@ async def edit_txn_field_input(message: Message, state: FSMContext, session_make
 
     await state.update_data(edit_txn_pending_field=None)
     await state.set_state(EditTransactionStates.field)
-    await message.answer("Updated.\n" + summary, reply_markup=edit_txn_fields_keyboard(is_for_someone_else))
+    await message.answer("✅ <b>Updated</b>\n" + summary, reply_markup=edit_txn_fields_keyboard(is_for_someone_else))
 
 
 def _txn_picker_button_label(txn: RecentTransactionRow) -> str:
@@ -1091,34 +1091,34 @@ def _format_txn_summary(txn: Transaction) -> str:
     else:
         source_label = mode_label
     return (
-        f"Transaction ID: {txn.id}\n"
-        f"Payment mode: {mode_label}\n"
-        f"Source: {source_label}\n"
-        f"Date: {txn.txn_date.isoformat()}\n"
-        f"Amount: {format_inr(txn.amount)}\n"
-        f"Discount: {format_inr(txn.discount_amount)}\n"
-        f"Cashback: {format_inr(txn.cashback_amount)}\n"
-        f"Total: {format_inr(txn.final_amount)}\n"
-        f"Category: {txn.category or '-'}\n"
-        f"Notes: {txn.notes or '-'}\n"
-        f"For someone else: {'Yes' if txn.is_for_someone_else else 'No'}\n"
-        f"Reimbursement: {txn.reimbursement_status.value}"
+        f"🆔 <b>Transaction ID:</b> {txn.id}\n"
+        f"💳 <b>Payment mode:</b> {mode_label}\n"
+        f"🏷️ <b>Source:</b> {source_label}\n"
+        f"📅 <b>Date:</b> {txn.txn_date.isoformat()}\n"
+        f"💰 <b>Amount:</b> {format_inr(txn.amount)}\n"
+        f"💸 <b>Discount:</b> {format_inr(txn.discount_amount)}\n"
+        f"🎁 <b>Cashback:</b> {format_inr(txn.cashback_amount)}\n"
+        f"✅ <b>Total:</b> {format_inr(txn.final_amount)}\n"
+        f"🏷️ <b>Category:</b> {txn.category or '-'}\n"
+        f"📝 <b>Notes:</b> {txn.notes or '-'}\n"
+        f"👥 <b>For someone else:</b> {'Yes' if txn.is_for_someone_else else 'No'}\n"
+        f"🔁 <b>Reimbursement:</b> {txn.reimbursement_status.value}"
     )
 
 
 def _edit_txn_field_prompt(field: str) -> str:
     if field == "amount":
-        return "Enter new amount:"
+        return "💵 Enter new amount:"
     if field == "category":
-        return "Enter new category, or send 'skip' to clear:"
+        return "🏷️ Enter new category, or send <b>skip</b> to clear:"
     if field == "notes":
-        return "Enter new notes, or send 'skip' to clear:"
+        return "📝 Enter new notes, or send <b>skip</b> to clear:"
     if field == "txn_date":
-        return "Enter new date in YYYY-MM-DD, or send 'skip' for today:"
+        return "📅 Enter new date in <b>YYYY-MM-DD</b>, or send <b>skip</b> for today:"
     if field == "discount_amount":
-        return "Enter new discount amount:"
+        return "💸 Enter new discount amount:"
     if field == "cashback_amount":
-        return "Enter new cashback amount:"
+        return "🎁 Enter new cashback amount:"
     if field == "person_name":
-        return "Enter person name, or send 'skip' to clear:"
-    return "Enter value:"
+        return "🙍 Enter person name, or send <b>skip</b> to clear:"
+    return "✍️ Enter value:"

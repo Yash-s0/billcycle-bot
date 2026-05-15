@@ -34,31 +34,31 @@ async def add_card_command(message: Message, state: FSMContext, session_maker: a
     await state.clear()
     await state.set_state(AddCardStates.bank_name)
     await state.update_data(user_id=user.id)
-    await message.answer("Enter bank name:")
+    await message.answer("🏦 <b>Add Card</b>\nEnter bank name:")
 
 
 @router.message(AddCardStates.bank_name)
 async def add_card_bank_name(message: Message, state: FSMContext) -> None:
     value = (message.text or "").strip()
     if not value:
-        await message.answer("Bank name cannot be empty. Enter bank name:")
+        await message.answer("⚠️ Bank name cannot be empty. Please enter bank name:")
         return
 
     await state.update_data(bank_name=value)
     await state.set_state(AddCardStates.card_name)
-    await message.answer("Enter card nickname:")
+    await message.answer("💳 Enter card nickname:")
 
 
 @router.message(AddCardStates.card_name)
 async def add_card_card_name(message: Message, state: FSMContext) -> None:
     value = (message.text or "").strip()
     if not value:
-        await message.answer("Card nickname cannot be empty. Enter card nickname:")
+        await message.answer("⚠️ Card nickname cannot be empty. Please enter card nickname:")
         return
 
     await state.update_data(card_name=value)
     await state.set_state(AddCardStates.billing_day)
-    await message.answer("Enter billing day of month (1-31):")
+    await message.answer("🧾 Enter billing day of month (1-31):")
 
 
 def _parse_day(value: str) -> int | None:
@@ -74,25 +74,25 @@ def _parse_day(value: str) -> int | None:
 async def add_card_billing_day(message: Message, state: FSMContext) -> None:
     day = _parse_day((message.text or "").strip())
     if day is None:
-        await message.answer("Billing day must be between 1 and 31. Enter billing day:")
+        await message.answer("⚠️ Billing day must be between 1 and 31. Enter billing day again:")
         return
 
     await state.update_data(billing_day=day)
     await state.set_state(AddCardStates.due_day)
-    await message.answer("Enter due day of month (1-31):")
+    await message.answer("⏰ Enter due day of month (1-31):")
 
 
 @router.message(AddCardStates.due_day)
 async def add_card_due_day(message: Message, state: FSMContext) -> None:
     day = _parse_day((message.text or "").strip())
     if day is None:
-        await message.answer("Due day must be between 1 and 31. Enter due day:")
+        await message.answer("⚠️ Due day must be between 1 and 31. Enter due day again:")
         return
 
     await state.update_data(due_day=day)
     await state.set_state(AddCardStates.credit_limit)
     await message.answer(
-        "Enter credit limit (optional). Send 'skip' to skip.",
+        "💰 Enter credit limit (<i>optional</i>). Send <b>skip</b> to skip.",
         reply_markup=skip_keyboard("card_limit"),
     )
 
@@ -117,7 +117,7 @@ async def add_card_credit_limit_skip(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
     await state.update_data(credit_limit=None)
     await state.set_state(AddCardStates.notes)
-    await callback.message.answer("Add notes (optional). Send 'skip' to skip.", reply_markup=skip_keyboard("card_notes"))
+    await callback.message.answer("📝 Add notes (<i>optional</i>). Send <b>skip</b> to skip.", reply_markup=skip_keyboard("card_notes"))
 
 
 @router.message(AddCardStates.credit_limit)
@@ -128,12 +128,12 @@ async def add_card_credit_limit(message: Message, state: FSMContext) -> None:
     else:
         amount = _parse_credit_limit(value)
         if amount is None:
-            await message.answer("Credit limit must be numeric or 'skip'. Enter credit limit:")
+            await message.answer("⚠️ Credit limit must be numeric or <b>skip</b>. Enter credit limit again:")
             return
         await state.update_data(credit_limit=amount)
 
     await state.set_state(AddCardStates.notes)
-    await message.answer("Add notes (optional). Send 'skip' to skip.", reply_markup=skip_keyboard("card_notes"))
+    await message.answer("📝 Add notes (<i>optional</i>). Send <b>skip</b> to skip.", reply_markup=skip_keyboard("card_notes"))
 
 
 @router.callback_query(AddCardStates.notes, F.data == "card_notes:skip")
@@ -174,7 +174,7 @@ async def _save_card(
         await session.commit()
 
     await state.clear()
-    await message.answer(f"Card saved: {card.bank_name}/{card.card_name}")
+    await message.answer(f"✅ <b>Card saved</b>\n{card.bank_name}/{card.card_name}")
 
 
 @router.message(Command("list_cards"))
@@ -185,7 +185,7 @@ async def manage_cards_command(message: Message, state: FSMContext, session_make
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
-            await message.answer("No profile found. Use /start first.")
+            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
 
         cards = (
@@ -197,14 +197,14 @@ async def manage_cards_command(message: Message, state: FSMContext, session_make
         ).scalars().all()
 
     if not cards:
-        await message.answer("You have no cards yet. Use /add_card.")
+        await message.answer("📭 You have no cards yet. Use <b>/add_card</b>.")
         return
 
     rows = [(card.id, f"{card.card_name} | {card.bank_name}") for card in cards]
     await state.clear()
     await state.set_state(EditCardStates.card)
     await state.update_data(user_id=user.id)
-    await message.answer("Select a card to manage:", reply_markup=cards_keyboard(rows))
+    await message.answer("🧩 Select a card to manage:", reply_markup=cards_keyboard(rows))
 
 
 @router.callback_query(EditCardStates.card, F.data.startswith("card:"))
@@ -220,7 +220,7 @@ async def edit_card_select(callback: CallbackQuery, state: FSMContext, session_m
     async with session_maker() as session:
         card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
     if not card:
-        await callback.message.answer("Card not found.")
+        await callback.message.answer("⚠️ Card not found.")
         await state.clear()
         return
 
@@ -241,18 +241,18 @@ async def edit_card_action(callback: CallbackQuery, state: FSMContext) -> None:
 
     if action == "cancel":
         await state.clear()
-        await callback.message.answer("Edit card cancelled.")
+        await callback.message.answer("❌ Edit card cancelled.")
         return
     if action == "delete":
         await state.set_state(EditCardStates.confirm_delete)
         await callback.message.answer(
-            "Delete this card?\nThis will also delete transactions linked to this card.",
+            "⚠️ <b>Delete this card?</b>\nThis will also delete transactions linked to this card.",
             reply_markup=edit_confirm_delete_keyboard("edit_card_delete"),
         )
         return
 
     await state.set_state(EditCardStates.field)
-    await callback.message.answer("Choose what to update:", reply_markup=edit_card_fields_keyboard())
+    await callback.message.answer("✏️ Choose what to update:", reply_markup=edit_card_fields_keyboard())
 
 
 @router.callback_query(EditCardStates.confirm_delete, F.data.startswith("edit_card_delete:"))
@@ -267,7 +267,7 @@ async def edit_card_delete_confirm(
     choice = callback.data.split(":", maxsplit=1)[1]
     if choice == "no":
         await state.set_state(EditCardStates.action)
-        await callback.message.answer("Delete cancelled.", reply_markup=edit_action_keyboard("edit_card_action"))
+        await callback.message.answer("✅ Delete cancelled.", reply_markup=edit_action_keyboard("edit_card_action"))
         return
 
     data = await state.get_data()
@@ -277,13 +277,13 @@ async def edit_card_delete_confirm(
         card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
         if not card:
             await state.clear()
-            await callback.message.answer("Card not found. Nothing deleted.")
+            await callback.message.answer("⚠️ Card not found. Nothing deleted.")
             return
         await session.delete(card)
         await session.commit()
 
     await state.clear()
-    await callback.message.answer(f"Deleted card ID {card_id}.")
+    await callback.message.answer(f"🗑️ Deleted card ID <b>{card_id}</b>.")
 
 
 @router.callback_query(EditCardStates.field, F.data.startswith("edit_card_field:"))
@@ -295,7 +295,7 @@ async def edit_card_field_select(callback: CallbackQuery, state: FSMContext, ses
 
     if field == "back":
         await state.set_state(EditCardStates.action)
-        await callback.message.answer("Back to actions.", reply_markup=edit_action_keyboard("edit_card_action"))
+        await callback.message.answer("⬅️ Back to actions.", reply_markup=edit_action_keyboard("edit_card_action"))
         return
 
     await state.update_data(edit_card_pending_field=field)
@@ -315,13 +315,13 @@ async def edit_card_field_input(message: Message, state: FSMContext, session_mak
     update_value: object
     if field in {"bank_name", "card_name"}:
         if not raw:
-            await message.answer("Value cannot be empty. Enter again:")
+            await message.answer("⚠️ Value cannot be empty. Enter again:")
             return
         update_value = raw
     elif field in {"billing_day", "due_day"}:
         day = _parse_day(raw)
         if day is None:
-            await message.answer("Day must be between 1 and 31. Enter again:")
+            await message.answer("⚠️ Day must be between 1 and 31. Enter again:")
             return
         update_value = day
     elif field == "credit_limit":
@@ -330,21 +330,21 @@ async def edit_card_field_input(message: Message, state: FSMContext, session_mak
         else:
             limit = _parse_credit_limit(raw)
             if limit is None:
-                await message.answer("Credit limit must be numeric or 'skip'. Enter again:")
+                await message.answer("⚠️ Credit limit must be numeric or <b>skip</b>. Enter again:")
                 return
             update_value = limit
     elif field == "notes":
         update_value = None if raw_lower == "skip" or not raw else raw
     else:
         await state.set_state(EditCardStates.field)
-        await message.answer("Unknown field. Choose again:", reply_markup=edit_card_fields_keyboard())
+        await message.answer("⚠️ Unknown field. Choose again:", reply_markup=edit_card_fields_keyboard())
         return
 
     async with session_maker() as session:
         card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
         if not card:
             await state.clear()
-            await message.answer("Card not found.")
+            await message.answer("⚠️ Card not found.")
             return
         setattr(card, field, update_value)
         await session.commit()
@@ -353,30 +353,30 @@ async def edit_card_field_input(message: Message, state: FSMContext, session_mak
 
     await state.update_data(edit_card_pending_field=None)
     await state.set_state(EditCardStates.field)
-    await message.answer("Updated.\n" + summary, reply_markup=edit_card_fields_keyboard())
+    await message.answer("✅ <b>Updated</b>\n" + summary, reply_markup=edit_card_fields_keyboard())
 
 
 def _format_card_summary(card: Card) -> str:
     return (
-        f"Card: {card.bank_name}/{card.card_name}\n"
-        f"Billing day: {card.billing_day}\n"
-        f"Due day: {card.due_day}\n"
-        f"Credit limit: {card.credit_limit if card.credit_limit is not None else '-'}\n"
-        f"Notes: {card.notes or '-'}"
+        f"💳 <b>Card:</b> {card.bank_name}/{card.card_name}\n"
+        f"🧾 <b>Billing day:</b> {card.billing_day}\n"
+        f"⏰ <b>Due day:</b> {card.due_day}\n"
+        f"💰 <b>Credit limit:</b> {card.credit_limit if card.credit_limit is not None else '-'}\n"
+        f"📝 <b>Notes:</b> {card.notes or '-'}"
     )
 
 
 def _card_field_prompt(field: str) -> str:
     if field == "bank_name":
-        return "Enter new bank name:"
+        return "🏦 Enter new bank name:"
     if field == "card_name":
-        return "Enter new card nickname:"
+        return "💳 Enter new card nickname:"
     if field == "billing_day":
-        return "Enter new billing day (1-31):"
+        return "🧾 Enter new billing day (1-31):"
     if field == "due_day":
-        return "Enter new due day (1-31):"
+        return "⏰ Enter new due day (1-31):"
     if field == "credit_limit":
-        return "Enter new credit limit, or send 'skip' to clear:"
+        return "💰 Enter new credit limit, or send <b>skip</b> to clear:"
     if field == "notes":
-        return "Enter new notes, or send 'skip' to clear:"
-    return "Enter value:"
+        return "📝 Enter new notes, or send <b>skip</b> to clear:"
+    return "✍️ Enter value:"

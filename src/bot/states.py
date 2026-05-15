@@ -20,10 +20,9 @@ class AddTransactionStates(StatesGroup):
 
 
 class MarkPaidStates(StatesGroup):
-    person = State()
-    transaction = State()
+    card = State()
+    action = State()
     amount = State()
-    notes = State()
 
 
 class EditCardStates(StatesGroup):
@@ -55,3 +54,4 @@ class ReportStates(StatesGroup):
 
 class SettingsStates(StatesGroup):
     main = State()
+    reminder_time_input = State()

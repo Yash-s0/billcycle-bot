@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import time as dt_time
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -10,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..config import Settings
 from ..keyboards import (
     settings_invite_keyboard,
+    settings_reminder_keyboard,
     settings_share_confirm_keyboard,
     settings_share_people_keyboard,
 )
@@ -19,33 +22,39 @@ from .common import ensure_user, get_user_by_telegram_id, short_text
 
 router = Router(name=__name__)
 
-COMMANDS_TEXT = """Available commands:
-/start - Register and welcome message
-/help - Show this help
-/add_card - Add a credit card
-/list_cards - Manage cards (view/update/delete)
-/add_txn - Add a transaction
-/edit_txn - Update or delete a transaction
-/recent_txns - Show recent transactions
-/who_owes_me - Pending receivables by person
-/mark_paid - Record reimbursement payment
-/card_summary - Current cycle summary for a card
-/report - Today/weekly/monthly/custom reports
-/settings - Show bot settings overview"""
+COMMANDS_TEXT = """✨ <b>Available Commands</b>
+<b>/start</b> - Register and show welcome message
+<b>/help</b> - Show this help menu
+<b>/add_card</b> - Add a credit card
+<b>/list_cards</b> - Manage cards (view/update/delete)
+<b>/add_txn</b> - Add a transaction
+<b>/edit_txn</b> - Update or delete a transaction
+<b>/recent_txns</b> - Show recent transactions
+<b>/who_owes_me</b> - Pending receivables by person
+<b>/mark_paid</b> - Track card bill payments (full/partial)
+<b>/card_summary</b> - Current cycle summary for a card
+<b>/report</b> - Today/weekly/monthly/custom reports
+<b>/settings</b> - Open settings"""
 
 
-def _settings_overview_text(settings: Settings) -> str:
+def _format_hhmm(value: dt_time) -> str:
+    return f"{value.hour:02d}:{value.minute:02d}"
+
+
+def _settings_overview_text(settings: Settings, user: User) -> str:
+    reminder_status = "Enabled ✅" if user.reminders_enabled else "Disabled 🔕"
     return (
-        "Settings:\n"
-        f"- Timezone: {settings.timezone}\n"
-        "\nPrivacy:\n"
-        "- Card numbers are never collected\n"
-        "- CVV/OTP/PIN/passwords are never stored\n"
-        "- Shared collaborators can add transactions only; they cannot view your private transaction history\n\n"
-        "Shared Expenses:\n"
-        "- Invite: send a basic bot invite link\n"
-        "- Invite + Share Expenses: let someone add transactions to your account\n"
-        "- Manage Shared Access: view/remove people with shared-add access"
+        "⚙️ <b>Settings</b>\n"
+        f"🌍 <b>Timezone:</b> <i>{settings.timezone}</i>\n"
+        f"⏰ <b>Daily reminder:</b> <i>{reminder_status}</i> at <b>{_format_hhmm(user.reminder_time)}</b>\n"
+        "\n🔒 <b>Privacy</b>\n"
+        "• Card numbers are <b>never</b> collected\n"
+        "• CVV/OTP/PIN/passwords are <b>never</b> stored\n"
+        "• Shared collaborators can <b>add transactions only</b>; they cannot view your private transaction history\n\n"
+        "🤝 <b>Shared Expenses</b>\n"
+        "• <b>Basic Invite</b>: send a basic bot invite link\n"
+        "• <b>Invite + Share Expenses</b>: let someone add transactions to your account\n"
+        "• <b>Manage Shared Access</b>: view/remove people with shared-add access"
     )
 
 
@@ -74,6 +83,54 @@ def _format_collaborator_label(full_name: str, username: str | None) -> str:
     return full_name
 
 
+def _settings_reminder_text(settings: Settings, user: User) -> str:
+    status = "Enabled ✅" if user.reminders_enabled else "Disabled 🔕"
+    return (
+        "⏰ <b>Reminder Settings</b>\n"
+        f"🌍 Timezone: <i>{settings.timezone}</i>\n"
+        f"🔔 Status: <b>{status}</b>\n"
+        f"🕒 Time: <b>{_format_hhmm(user.reminder_time)}</b>\n\n"
+        "Send time in <b>HH:MM</b> format (24-hour), for example <b>09:00</b>."
+    )
+
+
+async def _send_settings_overview(
+    message: Message,
+    state: FSMContext,
+    settings: Settings,
+    session_maker: async_sessionmaker[AsyncSession],
+    user_tg_id: int,
+) -> None:
+    async with session_maker() as session:
+        user = await get_user_by_telegram_id(session, user_tg_id)
+    if not user:
+        await state.clear()
+        await message.answer("⚠️ <b>No profile found.</b>\nPlease use <b>/start</b> first.")
+        return
+    await state.set_state(SettingsStates.main)
+    await message.answer(
+        _settings_overview_text(settings, user),
+        reply_markup=settings_invite_keyboard("settings_invite"),
+    )
+
+
+async def _send_reminder_settings(
+    message: Message,
+    settings: Settings,
+    session_maker: async_sessionmaker[AsyncSession],
+    user_tg_id: int,
+) -> None:
+    async with session_maker() as session:
+        user = await get_user_by_telegram_id(session, user_tg_id)
+    if not user:
+        await message.answer("⚠️ <b>No profile found.</b>\nPlease use <b>/start</b> first.")
+        return
+    await message.answer(
+        _settings_reminder_text(settings, user),
+        reply_markup=settings_reminder_keyboard(enabled=bool(user.reminders_enabled)),
+    )
+
+
 async def _send_manage_shared_access(
     message: Message,
     owner_tg_id: int,
@@ -82,20 +139,20 @@ async def _send_manage_shared_access(
     async with session_maker() as session:
         owner = await get_user_by_telegram_id(session, owner_tg_id)
         if not owner:
-            await message.answer("No profile found. Use /start first.")
+            await message.answer("⚠️ <b>No profile found.</b>\nPlease use <b>/start</b> first.")
             return
         collaborators = await _owner_collaborators(session, owner.id)
 
     if not collaborators:
         await message.answer(
-            "Shared access is currently empty.\n"
-            "Use 'Invite + Share Expenses' to add someone."
+            "📭 <b>Shared access is currently empty.</b>\n"
+            "Use <b>🤝 Invite + Share Expenses</b> to add someone."
         )
         return
 
     lines = [
-        f"Shared access ({len(collaborators)}):",
-        "These people can add transactions to your account:",
+        f"🛡️ <b>Shared Access ({len(collaborators)})</b>",
+        "These people can <b>add transactions</b> to your account:",
     ]
     keyboard_rows: list[tuple[int, str]] = []
     for idx, (collab_id, full_name, username) in enumerate(collaborators, start=1):
@@ -103,8 +160,8 @@ async def _send_manage_shared_access(
         lines.append(f"{idx}. {label}")
         keyboard_rows.append((collab_id, short_text(full_name, 24)))
     lines.append("")
-    lines.append("Tap Remove to revoke access immediately.")
-    lines.append("Existing transactions remain unchanged.")
+    lines.append("Tap <b>🗑️ Remove</b> to revoke access immediately.")
+    lines.append("<i>Existing transactions remain unchanged.</i>")
     await message.answer(
         "\n".join(lines),
         reply_markup=settings_share_people_keyboard(keyboard_rows),
@@ -129,12 +186,12 @@ async def start_command(message: Message, session_maker: async_sessionmaker[Asyn
             if owner_tg_raw.isdigit():
                 owner_tg_id = int(owner_tg_raw)
                 if owner_tg_id == message.from_user.id:
-                    await message.answer("This sharing link belongs to you. Share it with someone else.")
+                    await message.answer("ℹ️ This sharing link belongs to you. Share it with someone else.")
                     return
 
                 owner = await get_user_by_telegram_id(session, owner_tg_id)
                 if not owner:
-                    await message.answer("This sharing invite is invalid or expired.")
+                    await message.answer("⚠️ This sharing invite is invalid or expired.")
                     return
 
                 existing = await session.scalar(
@@ -145,8 +202,8 @@ async def start_command(message: Message, session_maker: async_sessionmaker[Asyn
                 )
                 if existing:
                     await message.answer(
-                        f"You're already connected for shared expenses with {owner.full_name}.\n"
-                        "Use /add_txn to add your own transactions or shared ones."
+                        f"✅ You're already connected for shared expenses with <b>{owner.full_name}</b>.\n"
+                        "Use <b>/add_txn</b> to add your own transactions or shared ones."
                     )
                     return
 
@@ -158,8 +215,8 @@ async def start_command(message: Message, session_maker: async_sessionmaker[Asyn
                 )
                 await session.commit()
                 await message.answer(
-                    f"Shared-expense invite accepted.\n"
-                    f"You can now add transactions for yourself and for {owner.full_name} via /add_txn."
+                    f"🎉 <b>Shared-expense invite accepted.</b>\n"
+                    f"You can now add transactions for yourself and for <b>{owner.full_name}</b> via <b>/add_txn</b>."
                 )
                 try:
                     await message.bot.send_message(
@@ -175,13 +232,14 @@ async def start_command(message: Message, session_maker: async_sessionmaker[Asyn
                 return
 
         if payload.startswith("invite"):
-            await message.answer("Invite accepted. Use /help to explore commands.")
+            await message.answer("✅ Invite accepted. Use <b>/help</b> to explore commands.")
             return
 
     text = (
-        "Welcome to BillCycle Bot.\n"
+        "👋 <b>Welcome to BillCycle Bot</b>\n"
         "Track cards, transactions, billing cycles, due dates, discounts, and reimbursements.\n\n"
-        "Use /help to see all commands."
+        "🚀 Start here: <b>/add_card</b>\n"
+        "📚 See all commands: <b>/help</b>"
     )
     await message.answer(text)
 
@@ -192,15 +250,28 @@ async def help_command(message: Message) -> None:
 
 
 @router.message(Command("settings"))
-async def settings_command(message: Message, state: FSMContext, settings: Settings) -> None:
-    await state.set_state(SettingsStates.main)
-    text = _settings_overview_text(settings)
-    await message.answer(text, reply_markup=settings_invite_keyboard("settings_invite"))
+async def settings_command(
+    message: Message,
+    state: FSMContext,
+    settings: Settings,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not message.from_user:
+        return
+    await _send_settings_overview(
+        message,
+        state,
+        settings,
+        session_maker=session_maker,
+        user_tg_id=message.from_user.id,
+    )
 
 
 @router.callback_query(SettingsStates.main, F.data.startswith("settings_invite:"))
 async def settings_invite_action(
     callback: CallbackQuery,
+    state: FSMContext,
+    settings: Settings,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
     if not callback.message or not callback.from_user:
@@ -217,7 +288,7 @@ async def settings_invite_action(
         invite_url = f"https://t.me/{username}?start=invite"
         await callback.answer()
         await callback.message.answer(
-            "Share this basic invite link:\n"
+            "🔗 <b>Share this basic invite link:</b>\n"
             f"{invite_url}"
         )
         return
@@ -226,9 +297,9 @@ async def settings_invite_action(
         invite_url = f"https://t.me/{username}?start=share_{callback.from_user.id}"
         await callback.answer()
         await callback.message.answer(
-            "Share this shared-expenses invite link:\n"
+            "🤝 <b>Share this shared-expenses invite link:</b>\n"
             f"{invite_url}\n\n"
-            "People who join through this link can add expenses to your account, "
+            "People who join through this link can <b>add expenses</b> to your account, "
             "but they cannot view your personal transactions."
         )
         return
@@ -242,12 +313,24 @@ async def settings_invite_action(
         )
         return
 
+    if action == "reminders":
+        await callback.answer()
+        await state.set_state(SettingsStates.main)
+        await _send_reminder_settings(
+            callback.message,
+            settings=settings,
+            session_maker=session_maker,
+            user_tg_id=callback.from_user.id,
+        )
+        return
+
     await callback.answer("Unknown action", show_alert=True)
 
 
 @router.callback_query(SettingsStates.main, F.data.startswith("settings_share_remove:"))
 async def settings_remove_shared_access(
     callback: CallbackQuery,
+    state: FSMContext,
     session_maker: async_sessionmaker[AsyncSession],
     settings: Settings,
 ) -> None:
@@ -257,9 +340,12 @@ async def settings_remove_shared_access(
     raw_value = callback.data.split(":", maxsplit=1)[1]
     if raw_value == "back":
         await callback.answer()
-        await callback.message.answer(
-            _settings_overview_text(settings),
-            reply_markup=settings_invite_keyboard("settings_invite"),
+        await _send_settings_overview(
+            callback.message,
+            state,
+            settings,
+            session_maker=session_maker,
+            user_tg_id=callback.from_user.id,
         )
         return
 
@@ -298,7 +384,7 @@ async def settings_remove_shared_access(
 
     await callback.answer()
     await callback.message.answer(
-        f"Remove shared-expense access for {collaborator_label}?\n"
+        f"⚠️ <b>Remove shared-expense access</b> for <b>{collaborator_label}</b>?\n"
         "They will no longer be able to add transactions to your account.",
         reply_markup=settings_share_confirm_keyboard(collaborator_user_id),
     )
@@ -307,6 +393,7 @@ async def settings_remove_shared_access(
 @router.callback_query(SettingsStates.main, F.data.startswith("settings_share_confirm:"))
 async def settings_remove_shared_access_confirm(
     callback: CallbackQuery,
+    state: FSMContext,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
     if not callback.message or not callback.from_user:
@@ -325,7 +412,8 @@ async def settings_remove_shared_access_confirm(
 
     if decision == "no":
         await callback.answer("Kept access")
-        await callback.message.answer("Removal cancelled. Access is unchanged.")
+        await callback.message.answer("✅ Removal cancelled. Access is unchanged.")
+        await state.set_state(SettingsStates.main)
         await _send_manage_shared_access(
             callback.message,
             owner_tg_id=callback.from_user.id,
@@ -368,9 +456,10 @@ async def settings_remove_shared_access_confirm(
 
     await callback.answer("Access removed")
     await callback.message.answer(
-        f"Removed shared-expense access for {removed_name}. "
+        f"🗑️ Removed shared-expense access for <b>{removed_name}</b>.\n"
         "They can no longer add transactions to your account."
     )
+    await state.set_state(SettingsStates.main)
     if removed_tg_id:
         try:
             await callback.bot.send_message(
@@ -387,4 +476,97 @@ async def settings_remove_shared_access_confirm(
         callback.message,
         owner_tg_id=callback.from_user.id,
         session_maker=session_maker,
+    )
+
+
+@router.callback_query(SettingsStates.main, F.data.startswith("settings_reminder:"))
+async def settings_reminder_action(
+    callback: CallbackQuery,
+    state: FSMContext,
+    settings: Settings,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message or not callback.from_user:
+        return
+
+    action = callback.data.split(":", maxsplit=1)[1]
+    if action == "back":
+        await callback.answer()
+        await _send_settings_overview(
+            callback.message,
+            state,
+            settings,
+            session_maker=session_maker,
+            user_tg_id=callback.from_user.id,
+        )
+        return
+
+    async with session_maker() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not user:
+            await callback.answer("No profile found", show_alert=True)
+            return
+
+        if action == "toggle":
+            user.reminders_enabled = not bool(user.reminders_enabled)
+            await session.commit()
+            await callback.answer("Updated")
+        elif action == "time":
+            await callback.answer()
+            await state.set_state(SettingsStates.reminder_time_input)
+            await callback.message.answer(
+                "🕒 Send daily reminder time in <b>HH:MM</b> format.\nExample: <b>09:00</b>"
+            )
+            return
+        else:
+            await callback.answer("Unknown action", show_alert=True)
+            return
+
+    await state.set_state(SettingsStates.main)
+    await _send_reminder_settings(
+        callback.message,
+        settings=settings,
+        session_maker=session_maker,
+        user_tg_id=callback.from_user.id,
+    )
+
+
+@router.message(SettingsStates.reminder_time_input)
+async def settings_reminder_time_input(
+    message: Message,
+    state: FSMContext,
+    settings: Settings,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not message.from_user:
+        return
+
+    raw = (message.text or "").strip()
+    try:
+        hour_text, minute_text = raw.split(":", maxsplit=1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError
+    except Exception:
+        await message.answer("⚠️ Invalid time. Use <b>HH:MM</b> (24-hour). Example: <b>21:30</b>")
+        return
+
+    async with session_maker() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        if not user:
+            await state.clear()
+            await message.answer("⚠️ <b>No profile found.</b>\nPlease use <b>/start</b> first.")
+            return
+        user.reminder_time = dt_time(hour=hour, minute=minute)
+        user.reminders_enabled = True
+        await session.commit()
+
+    await state.set_state(SettingsStates.main)
+    await message.answer(f"✅ Reminder time updated to <b>{hour:02d}:{minute:02d}</b>.")
+    await _send_reminder_settings(
+        message,
+        settings=settings,
+        session_maker=session_maker,
+        user_tg_id=message.from_user.id,
     )

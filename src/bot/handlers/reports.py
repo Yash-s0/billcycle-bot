@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import traceback
 from datetime import date, datetime, timedelta
+from html import escape
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -36,21 +37,26 @@ async def who_owes_me_command(message: Message, session_maker: async_sessionmake
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
-            await message.answer("No profile found. Use /start first.")
+            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
 
         summary = await list_people_pending_summary(session, user.id)
 
     if not summary:
-        await message.answer("Nobody owes you right now.")
+        await message.answer("✅ Nobody owes you right now.")
         return
 
-    lines = ["Pending receivables:"]
-    for item in summary:
-        lines.append(
-            f"- {item.person_name}: Owes {format_inr(item.pending_amount)} | "
-            f"Cashback {format_inr(item.cashback_amount)} | Total {format_inr(item.total_amount)} "
-            f"across {item.transaction_count} transaction(s)"
+    lines = ["💸 <b>Pending Receivables</b>"]
+    for idx, item in enumerate(summary, start=1):
+        person_name = escape(item.person_name)
+        lines.extend(
+            [
+                "",
+                f"{idx}. 👤 <b>{person_name}</b>",
+                f"• <b>Owes:</b> {format_inr(item.pending_amount)}",
+                f"• <b>Cashback:</b> {format_inr(item.cashback_amount)}",
+                f"• <b>Total:</b> {format_inr(item.total_amount)}",
+            ]
         )
     await message.answer("\n".join(lines))
 
@@ -63,7 +69,7 @@ async def card_summary_command(message: Message, session_maker: async_sessionmak
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
-            await message.answer("No profile found. Use /start first.")
+            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
 
         cards = (
@@ -75,7 +81,7 @@ async def card_summary_command(message: Message, session_maker: async_sessionmak
         ).scalars().all()
 
     if not cards:
-        await message.answer("No cards found. Use /add_card first.")
+        await message.answer("📭 No cards found. Use <b>/add_card</b> first.")
         return
 
     builder = InlineKeyboardBuilder()
@@ -83,7 +89,7 @@ async def card_summary_command(message: Message, session_maker: async_sessionmak
         builder.button(text=short_text(card_label(card), 24), callback_data=f"card_summary:{card.id}")
     builder.adjust(1)
 
-    await message.answer("Select card for summary:", reply_markup=builder.as_markup())
+    await message.answer("💳 Select card for summary:", reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data.startswith("card_summary:"))
@@ -101,27 +107,27 @@ async def card_summary_selected(
     async with session_maker() as session:
         user = await get_user_by_telegram_id(session, callback.from_user.id)
         if not user:
-            await callback.message.answer("No profile found. Use /start first.")
+            await callback.message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
 
         summary = await get_card_summary_data(session, user.id, card_id, date.today())
 
     if not summary:
-        await callback.message.answer("Card not found.")
+        await callback.message.answer("⚠️ Card not found.")
         return
 
     lines = [
-        f"Card summary: {summary.card_label}",
-        f"Cycle: {summary.cycle_start.isoformat()} to {summary.cycle_end.isoformat()}",
-        f"Current cycle total billed: {format_inr(summary.total_spend)}",
-        f"Total discounts: {format_inr(summary.total_discounts)}",
-        f"Total cashback: {format_inr(summary.total_cashback)}",
-        f"Pending receivables on this card: {format_inr(summary.pending_receivables)}",
-        f"Upcoming due date: {summary.upcoming_due_date.isoformat()}",
+        f"💳 <b>Card summary:</b> {summary.card_label}",
+        f"🗓️ <b>Cycle:</b> {summary.cycle_start.isoformat()} to {summary.cycle_end.isoformat()}",
+        f"💰 <b>Current cycle total billed:</b> {format_inr(summary.total_spend)}",
+        f"💸 <b>Total discounts:</b> {format_inr(summary.total_discounts)}",
+        f"🎁 <b>Total cashback:</b> {format_inr(summary.total_cashback)}",
+        f"👥 <b>Pending receivables on this card:</b> {format_inr(summary.pending_receivables)}",
+        f"⏰ <b>Upcoming due date:</b> {summary.upcoming_due_date.isoformat()}",
     ]
 
     if not summary.recent_transactions:
-        lines.append("Recent 5 transactions: none in this cycle.")
+        lines.append("🧾 Recent 5 transactions: none in this cycle.")
     else:
         rows: list[list[str]] = []
         for item in summary.recent_transactions:
@@ -134,7 +140,7 @@ async def card_summary_selected(
                 ]
             )
         lines.append("")
-        lines.append("Recent 5 transactions:")
+        lines.append("🧾 <b>Recent 5 transactions:</b>")
         lines.append(
             render_pre_table(
                 headers=["Date", "Card", "Notes", "Total"],
@@ -165,13 +171,13 @@ async def report_command(
         user = await get_user_by_telegram_id(session, message.from_user.id)
         if not user:
             logger.warning("report_command no profile: telegram_id=%s", message.from_user.id)
-            await message.answer("No profile found. Use /start first.")
+            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
 
     await state.clear()
     await state.set_state(ReportStates.menu)
     await message.answer(
-        "Choose report type:",
+        "📊 <b>Choose report type:</b>",
         reply_markup=report_type_keyboard("report_type"),
     )
 
@@ -197,7 +203,7 @@ async def report_type_selected(
 
     if selected == "cancel":
         await state.clear()
-        await callback.message.answer("Report cancelled.")
+        await callback.message.answer("❌ Report cancelled.")
         return
 
     if selected == "today":
@@ -231,18 +237,18 @@ async def report_type_selected(
         month_options = last_n_month_starts(date.today(), count=6)[1:]
         await state.set_state(ReportStates.month)
         await callback.message.answer(
-            "Select month (or use Current Month):",
+            "📅 Select month (or use <b>Current Month</b>):",
             reply_markup=months_keyboard(month_options, include_current_shortcut=True),
         )
         return
 
     if selected == "custom":
         await state.set_state(ReportStates.custom_from)
-        await callback.message.answer("Send start date in YYYY-MM-DD:")
+        await callback.message.answer("🗓️ Send start date in <b>YYYY-MM-DD</b>:")
         return
 
     await state.clear()
-    await callback.message.answer("Unknown option. Use /report again.")
+    await callback.message.answer("⚠️ Unknown option. Use <b>/report</b> again.")
 
 
 @router.callback_query(ReportStates.month, F.data.startswith("month:"))
@@ -275,7 +281,7 @@ async def monthly_report_month_callback(
                 callback.from_user.id,
                 raw,
             )
-            await callback.message.answer("Invalid month selected. Try /report again.")
+            await callback.message.answer("⚠️ Invalid month selected. Try <b>/report</b> again.")
             await state.clear()
             return
 
@@ -306,7 +312,7 @@ async def monthly_report_month_text(
                 message.from_user.id if message.from_user else None,
                 raw,
             )
-            await message.answer("Enter month in YYYY-MM format, or type 'current'.")
+            await message.answer("⚠️ Enter month in <b>YYYY-MM</b> format, or type <b>current</b>.")
             return
 
     if not message.from_user:
@@ -328,11 +334,11 @@ async def custom_report_from_date(message: Message, state: FSMContext) -> None:
     parsed = _parse_iso_date(raw)
     if parsed is None:
         logger.warning("custom_report_from_date invalid date: raw=%s", raw)
-        await message.answer("Invalid date. Send start date in YYYY-MM-DD:")
+        await message.answer("⚠️ Invalid date. Send start date in <b>YYYY-MM-DD</b>:")
         return
     await state.update_data(custom_from=parsed.isoformat())
     await state.set_state(ReportStates.custom_to)
-    await message.answer("Send end date in YYYY-MM-DD:")
+    await message.answer("🗓️ Send end date in <b>YYYY-MM-DD</b>:")
 
 
 @router.message(ReportStates.custom_to)
@@ -351,7 +357,7 @@ async def custom_report_to_date(
     end_date = _parse_iso_date(raw)
     if end_date is None:
         logger.warning("custom_report_to_date invalid end date: raw=%s", raw)
-        await message.answer("Invalid date. Send end date in YYYY-MM-DD:")
+        await message.answer("⚠️ Invalid date. Send end date in <b>YYYY-MM-DD</b>:")
         return
 
     data = await state.get_data()
@@ -360,7 +366,7 @@ async def custom_report_to_date(
     if start_date is None:
         logger.warning("custom_report_to_date missing/expired start date in state")
         await state.clear()
-        await message.answer("Custom date range expired. Use /report again.")
+        await message.answer("⌛ Custom date range expired. Use <b>/report</b> again.")
         return
     if end_date < start_date:
         logger.warning(
@@ -368,7 +374,7 @@ async def custom_report_to_date(
             start_date.isoformat(),
             end_date.isoformat(),
         )
-        await message.answer("End date cannot be before start date. Send end date again:")
+        await message.answer("⚠️ End date cannot be before start date. Send end date again:")
         return
     if not message.from_user:
         logger.warning("custom_report_to_date skipped: missing from_user")
@@ -444,7 +450,7 @@ async def _send_period_report(
             user = await get_user_by_telegram_id(session, telegram_id)
             if not user:
                 logger.warning("_send_period_report no profile: telegram_id=%s", telegram_id)
-                await message.answer("No profile found. Use /start first.")
+                await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
                 await state.clear()
                 return
 
@@ -474,44 +480,44 @@ async def _send_period_report(
         error_text = str(exc).lower()
         if "payment_mode" in error_text and ("column" in error_text or "undefined" in error_text):
             await message.answer(
-                "Report failed because database schema is outdated.\n"
-                "Run `alembic upgrade head`, restart the bot, and try again."
+                "⚠️ Report failed because database schema is outdated.\n"
+                "Run <code>alembic upgrade head</code>, restart the bot, and try again."
             )
         else:
-            await message.answer("Report failed due to an internal error. Please try again.")
+            await message.answer("⚠️ Report failed due to an internal error. Please try again.")
         await state.clear()
         return
 
     lines = [
-        title,
-        f"Period: {report.month_start.isoformat()} to {report.month_end.isoformat()}",
-        f"Total spent (all modes): {format_inr(report.total_spent)}",
-        f"Total discounts: {format_inr(report.total_discounts)}",
-        f"Total cashback: {format_inr(report.total_cashback)}",
-        f"Card bill to repay (excl UPI/Cash): {format_inr(report.net_payable)}",
-        f"Amount owed by others: {format_inr(report.amount_owed_by_others)}",
+        f"📊 <b>{title}</b>",
+        f"🗓️ <b>Period:</b> {report.month_start.isoformat()} to {report.month_end.isoformat()}",
+        f"💰 <b>Total spent (all modes):</b> {format_inr(report.total_spent)}",
+        f"💸 <b>Total discounts:</b> {format_inr(report.total_discounts)}",
+        f"🎁 <b>Total cashback:</b> {format_inr(report.total_cashback)}",
+        f"💳 <b>Card bill to repay (excl UPI/Cash):</b> {format_inr(report.net_payable)}",
+        f"👥 <b>Amount owed by others:</b> {format_inr(report.amount_owed_by_others)}",
         "",
-        "Top notes:",
+        "📝 <b>Top notes</b>:",
     ]
 
     if report.top_notes:
         for name, total in report.top_notes:
-            lines.append(f"- {name}: {format_inr(total)}")
+            lines.append(f"• {name}: {format_inr(total)}")
     else:
-        lines.append("- No data")
+        lines.append("• No data")
 
     lines.append("")
-    lines.append("Spend breakdown (cards + UPI + cash):")
+    lines.append("🧾 <b>Spend breakdown (cards + UPI + cash)</b>:")
 
     if report.card_breakdown:
         for item in report.card_breakdown:
             lines.append(
-                f"- {item.card_label}: Total {format_inr(item.total_billed)}, "
+                f"• {item.card_label}: Total {format_inr(item.total_billed)}, "
                 f"Discount {format_inr(item.total_discount)}, Cashback {format_inr(item.total_cashback)}, "
                 f"Net {format_inr(item.effective_net)}"
             )
     else:
-        lines.append("- No transactions")
+        lines.append("• No transactions")
 
     await state.clear()
     logger.info(

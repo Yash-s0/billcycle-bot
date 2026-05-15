@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import and_, case, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..config import Settings
-from ..models import Card, Payment, Person, Transaction, User
+from ..models import Card, Payment, Person, ReminderDelivery, Transaction, User
 from .billing import get_next_due_date
 from .reports import format_inr
 
@@ -118,16 +119,74 @@ async def run_daily_reminders(
     session_maker: async_sessionmaker[AsyncSession],
     timezone_name: str,
 ) -> None:
-    today = datetime.now(ZoneInfo(timezone_name)).date()
+    await _run_reminders_for_date(
+        bot=bot,
+        session_maker=session_maker,
+        timezone_name=timezone_name,
+        backfill_mode=False,
+    )
+
+
+async def run_backfill_reminders(
+    bot: Bot,
+    session_maker: async_sessionmaker[AsyncSession],
+    timezone_name: str,
+) -> None:
+    await _run_reminders_for_date(
+        bot=bot,
+        session_maker=session_maker,
+        timezone_name=timezone_name,
+        backfill_mode=True,
+    )
+
+
+async def _run_reminders_for_date(
+    bot: Bot,
+    session_maker: async_sessionmaker[AsyncSession],
+    timezone_name: str,
+    backfill_mode: bool,
+) -> None:
+    now_local = datetime.now(ZoneInfo(timezone_name))
+    today = now_local.date()
+    current_hm = (now_local.hour, now_local.minute)
     async with session_maker() as session:
         users = (await session.execute(select(User).order_by(User.id.asc()))).scalars().all()
 
     for user in users:
         try:
+            if not bool(user.reminders_enabled):
+                continue
+            reminder_time = user.reminder_time or dt_time(hour=9, minute=0)
+            reminder_hm = (reminder_time.hour, reminder_time.minute)
+            should_send_now = current_hm == reminder_hm
+            should_backfill_now = current_hm >= reminder_hm
+            if backfill_mode and not should_backfill_now:
+                continue
+            if not backfill_mode and not should_send_now:
+                continue
+
+            async with session_maker() as session:
+                already_sent = await session.scalar(
+                    select(ReminderDelivery.id).where(
+                        ReminderDelivery.user_id == user.id,
+                        ReminderDelivery.reminder_date == today,
+                    )
+                )
+                if already_sent:
+                    continue
+
             async with session_maker() as session:
                 text = await _build_reminder_message(session, user, today)
             if text:
+                if backfill_mode:
+                    text = "Backfill reminder (bot was offline earlier):\n\n" + text
                 await bot.send_message(chat_id=user.telegram_id, text=text)
+                async with session_maker() as session:
+                    session.add(ReminderDelivery(user_id=user.id, reminder_date=today))
+                    try:
+                        await session.commit()
+                    except IntegrityError:
+                        await session.rollback()
         except Exception:  # pragma: no cover - logging path
             logger.exception("Failed to send reminder to user=%s", user.id)
 
@@ -141,8 +200,7 @@ def setup_scheduler(
     scheduler.add_job(
         run_daily_reminders,
         trigger="cron",
-        hour=9,
-        minute=0,
+        minute="*",
         kwargs={"bot": bot, "session_maker": session_maker, "timezone_name": settings.timezone},
         id="daily_reminders",
         replace_existing=True,

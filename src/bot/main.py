@@ -13,7 +13,7 @@ from alembic.config import Config
 from .config import get_settings
 from .db import create_engine_and_session, create_schema
 from .handlers import cards_router, payments_router, reports_router, start_router, transactions_router
-from .services.reminders import setup_scheduler
+from .services.reminders import run_backfill_reminders, setup_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +65,7 @@ async def main() -> None:
 
     scheduler = setup_scheduler(bot, session_maker, settings)
     scheduler.start()
+    await run_backfill_reminders(bot, session_maker, settings.timezone)
 
     logger.info("Bot started.")
     try:

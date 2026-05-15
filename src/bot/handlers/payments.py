@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal
+from html import escape
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -9,18 +12,165 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..keyboards import people_keyboard, skip_keyboard, transactions_keyboard
-from ..models import Payment, ReimbursementStatus, Transaction
-from ..services.reports import (
-    format_inr,
-    list_people_pending_summary,
-    pending_transactions_for_person,
-    outstanding_amount_for_transaction,
-)
+from ..keyboards import card_bill_action_keyboard, cards_keyboard
+from ..models import Card, CardBillPayment, PaymentMode, Transaction
+from ..services.billing import get_current_billing_cycle, get_next_due_date
+from ..services.reports import format_inr
 from ..states import MarkPaidStates
-from .common import get_user_by_telegram_id, parse_positive_decimal, render_pre_table, short_text
+from .common import card_label, get_user_by_telegram_id, parse_positive_decimal, short_text
 
 router = Router(name=__name__)
+ZERO = Decimal("0")
+
+
+@dataclass(slots=True)
+class CardBillPendingItem:
+    card_id: int
+    card_label: str
+    cycle_start: date
+    cycle_end: date
+    due_date: date
+    billed_amount: Decimal
+    paid_amount: Decimal
+    pending_amount: Decimal
+
+
+def _is_card_bill_table_missing_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "card_bill_payments" in text
+        and (
+            "does not exist" in text
+            or "undefined table" in text
+            or "no such table" in text
+        )
+    )
+
+
+async def _send_card_bill_setup_error(message: Message) -> None:
+    await message.answer(
+        "⚠️ <b>Card bill payment setup is incomplete.</b>\n"
+        "Please run <code>alembic upgrade head</code>, restart the bot, then try <b>/mark_paid</b> again."
+    )
+
+
+async def _compute_cycle_bill_amounts(
+    session: AsyncSession,
+    user_id: int,
+    card_id: int,
+    cycle_start: date,
+    cycle_end: date,
+) -> tuple[Decimal, Decimal, Decimal]:
+    billed_raw = await session.scalar(
+        select(func.coalesce(func.sum(Transaction.final_amount - Transaction.cashback_amount), 0)).where(
+            Transaction.user_id == user_id,
+            Transaction.card_id == card_id,
+            Transaction.payment_mode == PaymentMode.CARD,
+            Transaction.txn_date >= cycle_start,
+            Transaction.txn_date <= cycle_end,
+        )
+    )
+    paid_raw = await session.scalar(
+        select(func.coalesce(func.sum(CardBillPayment.amount_paid), 0)).where(
+            CardBillPayment.user_id == user_id,
+            CardBillPayment.card_id == card_id,
+            CardBillPayment.cycle_start == cycle_start,
+            CardBillPayment.cycle_end == cycle_end,
+        )
+    )
+    billed = Decimal(str(billed_raw or 0))
+    paid = Decimal(str(paid_raw or 0))
+    pending = max(ZERO, billed - paid)
+    return billed, paid, pending
+
+
+async def _collect_card_pending_items(
+    session: AsyncSession,
+    user_id: int,
+    cards: list[Card],
+    today: date,
+) -> list[CardBillPendingItem]:
+    items: list[CardBillPendingItem] = []
+    for card in cards:
+        cycle_start, cycle_end = get_current_billing_cycle(card.billing_day, today)
+        due_date = get_next_due_date(card.due_day, today)
+        billed, paid, pending = await _compute_cycle_bill_amounts(
+            session,
+            user_id,
+            card.id,
+            cycle_start,
+            cycle_end,
+        )
+        items.append(
+            CardBillPendingItem(
+                card_id=card.id,
+                card_label=card_label(card),
+                cycle_start=cycle_start,
+                cycle_end=cycle_end,
+                due_date=due_date,
+                billed_amount=billed,
+                paid_amount=paid,
+                pending_amount=pending,
+            )
+        )
+    return items
+
+
+async def _show_card_bill_overview(
+    message: Message,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+    telegram_user_id: int,
+) -> None:
+    try:
+        async with session_maker() as session:
+            user = await get_user_by_telegram_id(session, telegram_user_id)
+            if not user:
+                await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
+                await state.clear()
+                return
+
+            cards = (
+                await session.execute(
+                    select(Card)
+                    .where(Card.user_id == user.id)
+                    .order_by(Card.bank_name.asc(), Card.card_name.asc(), Card.id.asc())
+                )
+            ).scalars().all()
+
+            if not cards:
+                await message.answer("📭 No cards found. Add one with <b>/add_card</b> first.")
+                await state.clear()
+                return
+
+            items = await _collect_card_pending_items(session, user.id, list(cards), today=date.today())
+    except Exception as exc:
+        await state.clear()
+        if _is_card_bill_table_missing_error(exc):
+            await _send_card_bill_setup_error(message)
+            return
+        await message.answer("⚠️ Unable to load card bills right now. Please try again.")
+        return
+
+    lines = ["💳 <b>Card Bill Tracker</b>", "Select a card to update payment status:"]
+    rows: list[tuple[int, str]] = []
+
+    for idx, item in enumerate(items, start=1):
+        lines.extend(
+            [
+                "",
+                f"{idx}. <b>{escape(item.card_label)}</b>",
+                f"• Cycle: {item.cycle_start.isoformat()} to {item.cycle_end.isoformat()}",
+                f"• Billed: {format_inr(item.billed_amount)} | Paid: {format_inr(item.paid_amount)}",
+                f"• <b>Pending: {format_inr(item.pending_amount)}</b> | Due: {item.due_date.isoformat()}",
+            ]
+        )
+        rows.append((item.card_id, f"{short_text(item.card_label, 16)} • {format_inr(item.pending_amount)}"))
+
+    await state.clear()
+    await state.set_state(MarkPaidStates.card)
+    await state.update_data(user_id=user.id)
+    await message.answer("\n".join(lines), reply_markup=cards_keyboard(rows, prefix="bill_card"))
 
 
 @router.message(Command("mark_paid"))
@@ -31,230 +181,231 @@ async def mark_paid_command(
 ) -> None:
     if not message.from_user:
         return
+    await _show_card_bill_overview(message, state, session_maker, telegram_user_id=message.from_user.id)
 
-    async with session_maker() as session:
-        user = await get_user_by_telegram_id(session, message.from_user.id)
-        if not user:
-            await message.answer("No profile found. Use /start first.")
+
+@router.callback_query(MarkPaidStates.card, F.data.startswith("bill_card:"))
+async def mark_paid_select_card(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message or not callback.from_user:
+        return
+
+    await callback.answer()
+    raw_card_id = callback.data.split(":", maxsplit=1)[1]
+    if not raw_card_id.isdigit():
+        await callback.answer("Invalid card", show_alert=True)
+        return
+    card_id = int(raw_card_id)
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+
+    try:
+        async with session_maker() as session:
+            card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
+            if not card:
+                await callback.message.answer("⚠️ Card not found.")
+                return
+
+            cycle_start, cycle_end = get_current_billing_cycle(card.billing_day, date.today())
+            due_date = get_next_due_date(card.due_day, date.today())
+            billed, paid, pending = await _compute_cycle_bill_amounts(
+                session,
+                user_id,
+                card.id,
+                cycle_start,
+                cycle_end,
+            )
+    except Exception as exc:
+        if _is_card_bill_table_missing_error(exc):
+            await _send_card_bill_setup_error(callback.message)
+            await state.clear()
             return
-
-        people_summary = await list_people_pending_summary(session, user.id)
-
-    if not people_summary:
-        await message.answer("No pending reimbursements right now.")
+        await callback.message.answer("⚠️ Unable to load this card bill right now. Please try again.")
         return
 
-    rows = [
-        (
-            item.person_id,
-            f"{item.person_name} • Owes {format_inr(item.pending_amount)} | "
-            f"Cashback {format_inr(item.cashback_amount)} | Total {format_inr(item.total_amount)} "
-            f"({item.transaction_count} txns)",
+    if pending <= ZERO:
+        await callback.message.answer(
+            f"✅ <b>{escape(card_label(card))}</b> is already fully paid for this cycle.\n"
+            f"Pending: {format_inr(pending)}"
         )
-        for item in people_summary
-    ]
-
-    await state.clear()
-    await state.set_state(MarkPaidStates.person)
-    await state.update_data(user_id=user.id)
-    await message.answer("Select person:", reply_markup=people_keyboard(rows))
-
-
-@router.callback_query(MarkPaidStates.person, F.data.startswith("person:"))
-async def mark_paid_select_person(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session_maker: async_sessionmaker[AsyncSession],
-) -> None:
-    if not callback.message:
         return
 
-    await callback.answer()
-    person_id = int(callback.data.split(":", maxsplit=1)[1])
-
-    data = await state.get_data()
-    user_id = int(data["user_id"])
-
-    async with session_maker() as session:
-        pending_txns = await pending_transactions_for_person(session, user_id, person_id)
-
-    if not pending_txns:
-        await callback.message.answer("No pending transactions for this person.")
-        await state.clear()
-        return
-
-    rows = [
-        (
-            item.transaction_id,
-            f"ID {item.transaction_id} | Owes {format_inr(item.pending_amount)}",
-        )
-        for item in pending_txns
-    ]
-
-    table_rows: list[list[str]] = []
-    for item in pending_txns:
-        table_rows.append(
-            [
-                str(item.transaction_id),
-                item.txn_date.isoformat(),
-                short_text(item.card_label, 14),
-                short_text(item.notes, 16),
-                format_inr(item.final_amount),
-                format_inr(item.cashback_amount),
-                format_inr(item.recoverable_amount),
-                format_inr(item.pending_amount),
-            ]
-        )
-    table = render_pre_table(
-        headers=["ID", "Date", "Source", "Notes", "Total", "Cashbk", "Owes", "Pending"],
-        rows=table_rows,
-        right_align_cols={0, 4, 5, 6, 7},
+    await state.update_data(
+        card_id=card.id,
+        card_name=card_label(card),
+        cycle_start=cycle_start.isoformat(),
+        cycle_end=cycle_end.isoformat(),
+        pending_amount=str(pending),
     )
-
-    await state.update_data(person_id=person_id)
-    await state.set_state(MarkPaidStates.transaction)
-    await callback.message.answer(f"Pending transactions:\n{table}")
-    await callback.message.answer("Select pending transaction:", reply_markup=transactions_keyboard(rows))
-
-
-@router.callback_query(MarkPaidStates.transaction, F.data.startswith("txn:"))
-async def mark_paid_select_transaction(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session_maker: async_sessionmaker[AsyncSession],
-) -> None:
-    if not callback.message:
-        return
-
-    await callback.answer()
-    transaction_id = int(callback.data.split(":", maxsplit=1)[1])
-
-    data = await state.get_data()
-    user_id = int(data["user_id"])
-
-    async with session_maker() as session:
-        pending_amount = await outstanding_amount_for_transaction(session, user_id, transaction_id)
-
-    if pending_amount <= Decimal("0"):
-        await callback.message.answer("This transaction is already fully paid.")
-        await state.clear()
-        return
-
-    await state.update_data(transaction_id=transaction_id, pending_amount=str(pending_amount))
-    await state.set_state(MarkPaidStates.amount)
+    await state.set_state(MarkPaidStates.action)
     await callback.message.answer(
-        f"Pending amount: {format_inr(pending_amount)}\nEnter amount paid now (or type 'full')."
+        "🧾 <b>Card Payment Action</b>\n"
+        f"Card: <b>{escape(card_label(card))}</b>\n"
+        f"Cycle: {cycle_start.isoformat()} to {cycle_end.isoformat()}\n"
+        f"Billed: {format_inr(billed)}\n"
+        f"Paid: {format_inr(paid)}\n"
+        f"<b>Pending: {format_inr(pending)}</b>\n"
+        f"Due date: {due_date.isoformat()}\n\n"
+        "Choose payment update:",
+        reply_markup=card_bill_action_keyboard("card_bill_action"),
     )
+
+
+@router.callback_query(MarkPaidStates.action, F.data.startswith("card_bill_action:"))
+async def mark_paid_choose_action(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message or not callback.from_user:
+        return
+
+    await callback.answer()
+    action = callback.data.split(":", maxsplit=1)[1]
+    data = await state.get_data()
+    pending = Decimal(str(data.get("pending_amount", "0")))
+
+    if action == "cancel":
+        await state.clear()
+        await callback.message.answer("❌ Payment update cancelled.")
+        return
+
+    if action == "full":
+        await _save_card_bill_payment(
+            message=callback.message,
+            state=state,
+            session_maker=session_maker,
+            telegram_user_id=callback.from_user.id,
+            amount_paid=pending,
+        )
+        return
+
+    if action == "partial":
+        await state.set_state(MarkPaidStates.amount)
+        await callback.message.answer(
+            f"💰 Pending amount: <b>{format_inr(pending)}</b>\n"
+            "Enter partial amount paid:"
+        )
+        return
+
+    await callback.answer("Unknown action", show_alert=True)
 
 
 @router.message(MarkPaidStates.amount)
-async def mark_paid_amount(message: Message, state: FSMContext) -> None:
+async def mark_paid_partial_amount(
+    message: Message,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not message.from_user:
+        return
+
     data = await state.get_data()
-    pending_amount = Decimal(str(data["pending_amount"]))
-
-    raw = (message.text or "").strip().lower()
-    if raw == "full":
-        amount = pending_amount
-    else:
-        parsed = parse_positive_decimal(raw)
-        if parsed is None:
-            await message.answer("Amount must be a positive number or 'full'. Enter amount paid:")
-            return
-        amount = parsed
-
-    if amount > pending_amount:
+    pending = Decimal(str(data.get("pending_amount", "0")))
+    parsed = parse_positive_decimal(message.text or "")
+    if parsed is None:
+        await message.answer("⚠️ Amount must be a positive number. Enter partial amount paid:")
+        return
+    if parsed > pending:
         await message.answer(
-            f"Amount cannot exceed pending balance ({format_inr(pending_amount)}). Enter a valid amount:"
+            f"⚠️ Amount cannot exceed pending bill ({format_inr(pending)}). Enter a valid amount:"
         )
         return
 
-    await state.update_data(amount_paid=str(amount))
-    await state.set_state(MarkPaidStates.notes)
-    await message.answer("Add notes (optional). Send 'skip' to skip.", reply_markup=skip_keyboard("mark_paid_note"))
+    await _save_card_bill_payment(
+        message=message,
+        state=state,
+        session_maker=session_maker,
+        telegram_user_id=message.from_user.id,
+        amount_paid=parsed,
+    )
 
 
-@router.callback_query(MarkPaidStates.notes, F.data == "mark_paid_note:skip")
-async def mark_paid_skip_note(
-    callback: CallbackQuery,
-    state: FSMContext,
-    session_maker: async_sessionmaker[AsyncSession],
-) -> None:
-    if not callback.message:
-        return
-    await callback.answer()
-    await _save_payment(callback.message, state, session_maker, notes=None)
-
-
-@router.message(MarkPaidStates.notes)
-async def mark_paid_note(
+async def _save_card_bill_payment(
     message: Message,
     state: FSMContext,
     session_maker: async_sessionmaker[AsyncSession],
-) -> None:
-    text = (message.text or "").strip()
-    notes = None if not text or text.lower() == "skip" else text
-    await _save_payment(message, state, session_maker, notes=notes)
-
-
-async def _save_payment(
-    message: Message,
-    state: FSMContext,
-    session_maker: async_sessionmaker[AsyncSession],
-    notes: str | None,
+    telegram_user_id: int,
+    amount_paid: Decimal,
 ) -> None:
     data = await state.get_data()
     user_id = int(data["user_id"])
-    person_id = int(data["person_id"])
-    transaction_id = int(data["transaction_id"])
-    amount_paid = Decimal(str(data["amount_paid"]))
+    card_id = int(data["card_id"])
+    card_name = str(data.get("card_name") or "Card")
+
+    cycle_start = datetime.strptime(str(data["cycle_start"]), "%Y-%m-%d").date()
+    cycle_end = datetime.strptime(str(data["cycle_end"]), "%Y-%m-%d").date()
 
     async with session_maker() as session:
-        txn = await session.scalar(
-            select(Transaction).where(Transaction.id == transaction_id, Transaction.user_id == user_id)
-        )
-        if not txn:
+        card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
+        if not card:
             await state.clear()
-            await message.answer("Transaction not found.")
+            await message.answer("⚠️ Card not found.")
             return
 
-        existing_paid = (
-            await session.scalar(
-                select(func.coalesce(func.sum(Payment.amount_paid), 0)).where(
-                    Payment.user_id == user_id,
-                    Payment.transaction_id == transaction_id,
+        try:
+            billed, paid, outstanding = await _compute_cycle_bill_amounts(
+                session,
+                user_id,
+                card_id,
+                cycle_start,
+                cycle_end,
+            )
+        except Exception as exc:
+            await state.clear()
+            if _is_card_bill_table_missing_error(exc):
+                await _send_card_bill_setup_error(message)
+                return
+            await message.answer("⚠️ Unable to update card bill right now. Please try again.")
+            return
+        if amount_paid > outstanding:
+            await message.answer(
+                f"⚠️ Amount exceeds pending bill ({format_inr(outstanding)}). Please try again."
+            )
+            await state.set_state(MarkPaidStates.action)
+            return
+
+        try:
+            session.add(
+                CardBillPayment(
+                    user_id=user_id,
+                    card_id=card_id,
+                    cycle_start=cycle_start,
+                    cycle_end=cycle_end,
+                    amount_paid=amount_paid,
+                    notes="Recorded from /mark_paid card bill flow.",
                 )
             )
-            or Decimal("0")
-        )
-
-        recoverable_amount = max(
-            Decimal("0"),
-            Decimal(str(txn.final_amount)) - Decimal(str(txn.cashback_amount)),
-        )
-        outstanding = max(Decimal("0"), recoverable_amount - Decimal(str(existing_paid)))
-        if amount_paid > outstanding:
+            await session.commit()
+        except Exception as exc:
             await state.clear()
-            await message.answer(
-                f"Payment exceeds pending balance ({format_inr(outstanding)}). Please start /mark_paid again."
-            )
+            if _is_card_bill_table_missing_error(exc):
+                await _send_card_bill_setup_error(message)
+                return
+            await message.answer("⚠️ Unable to save card payment right now. Please try again.")
             return
 
-        payment = Payment(
-            user_id=user_id,
-            transaction_id=transaction_id,
-            person_id=person_id,
-            amount_paid=amount_paid,
-            notes=notes,
-        )
-        session.add(payment)
+    remaining = max(ZERO, outstanding - amount_paid)
+    status = "fully paid" if remaining <= ZERO else "partially paid"
 
-        remaining = outstanding - amount_paid
-        txn.reimbursement_status = ReimbursementStatus.PAID if remaining <= 0 else ReimbursementStatus.PARTIAL
-        await session.commit()
-
-    await state.clear()
     await message.answer(
-        f"Payment recorded: {format_inr(amount_paid)}\n"
-        f"Transaction ID: {transaction_id}\n"
-        f"Status: {'paid' if remaining <= 0 else 'partial'}"
+        f"✅ <b>Payment recorded</b>\n"
+        f"Card: <b>{escape(card_name)}</b>\n"
+        f"Cycle: {cycle_start.isoformat()} to {cycle_end.isoformat()}\n"
+        f"Billed: {format_inr(billed)}\n"
+        f"Previously paid: {format_inr(paid)}\n"
+        f"Paid now: {format_inr(amount_paid)}\n"
+        f"<b>Pending now: {format_inr(remaining)}</b>\n"
+        f"Status: <b>{status}</b>"
+    )
+
+    await _show_card_bill_overview(
+        message,
+        state,
+        session_maker,
+        telegram_user_id=telegram_user_id,
     )
