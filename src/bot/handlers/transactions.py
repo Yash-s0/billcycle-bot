@@ -154,12 +154,14 @@ async def add_txn_select_account(
 
     if choice == "cancel":
         await callback.answer("Cancelled")
+        await _delete_message_safely(callback.message)
         await state.clear()
         await callback.message.answer("❌ Add transaction cancelled.")
         return
 
     if choice == "self":
         await callback.answer()
+        await _delete_message_safely(callback.message)
         await state.update_data(user_id=adder_user_id, owner_label="You")
         await state.set_state(AddTransactionStates.mode)
         await _send_add_txn_mode_prompt(callback.message, prefill_amount)
@@ -188,6 +190,7 @@ async def add_txn_select_account(
         return
 
     await callback.answer()
+    await _delete_message_safely(callback.message)
     await state.update_data(user_id=owner_user_id, owner_label=owner.full_name)
     await state.set_state(AddTransactionStates.mode)
     await _send_add_txn_mode_prompt(callback.message, prefill_amount)
@@ -228,6 +231,7 @@ async def add_txn_select_mode(callback: CallbackQuery, state: FSMContext, sessio
 
         card_rows = [(card.id, _txn_card_picker_label(card)) for card in cards]
         await callback.answer()
+        await _delete_message_safely(callback.message)
         await state.set_state(AddTransactionStates.card)
         await callback.message.answer("💳 Select card:", reply_markup=cards_keyboard(card_rows, columns=2))
         return
@@ -236,13 +240,14 @@ async def add_txn_select_mode(callback: CallbackQuery, state: FSMContext, sessio
     prefill_amount = parse_positive_decimal(str(prefill_amount_raw)) if prefill_amount_raw is not None else None
     source_label = _payment_mode_label(selected_mode)
     await callback.answer()
+    await _delete_message_safely(callback.message)
     if prefill_amount is not None:
-        await callback.message.answer(f"✅ Selected payment mode: <b>{source_label}</b>")
         await _open_add_txn_draft(callback.message, state, prefill_amount)
         return
 
     await state.set_state(AddTransactionStates.amount)
-    await callback.message.answer(f"✅ Selected payment mode: <b>{source_label}</b>\nEnter amount:")
+    sent = await callback.message.answer(f"💰 Enter amount for <b>{source_label}</b>:")
+    await state.update_data(amount_prompt_chat_id=sent.chat.id, amount_prompt_message_id=sent.message_id)
 
 
 @router.callback_query(AddTransactionStates.card, F.data.startswith("card:"))
@@ -263,6 +268,7 @@ async def add_txn_select_card(callback: CallbackQuery, state: FSMContext, sessio
         return
 
     await callback.answer()
+    await _delete_message_safely(callback.message)
     selected_card_label = _txn_card_picker_label(card)
     await state.update_data(
         payment_mode=PaymentMode.CARD.value,
@@ -273,12 +279,12 @@ async def add_txn_select_card(callback: CallbackQuery, state: FSMContext, sessio
     if prefill_amount_raw is not None:
         prefill_amount = parse_positive_decimal(str(prefill_amount_raw))
         if prefill_amount is not None:
-            await callback.message.answer(f"✅ Selected: <b>{selected_card_label}</b>")
             await _open_add_txn_draft(callback.message, state, prefill_amount)
             return
 
     await state.set_state(AddTransactionStates.amount)
-    await callback.message.answer(f"✅ Selected: <b>{selected_card_label}</b>\nEnter amount:")
+    sent = await callback.message.answer(f"💰 Enter amount for <b>{selected_card_label}</b>:")
+    await state.update_data(amount_prompt_chat_id=sent.chat.id, amount_prompt_message_id=sent.message_id)
 
 
 @router.message(AddTransactionStates.amount)
@@ -288,6 +294,7 @@ async def add_txn_amount(message: Message, state: FSMContext) -> None:
         await message.answer("⚠️ Amount must be a positive number. Enter amount:")
         return
 
+    await _delete_amount_prompt_and_answer(message, state)
     await _open_add_txn_draft(message, state, amount)
 
 
@@ -306,6 +313,9 @@ async def _open_add_txn_draft(message: Message, state: FSMContext, amount: Decim
         reimbursement_status=ReimbursementStatus.OWN.value,
         person_name=None,
         pending_field=None,
+        optional_prompt_refs=[],
+        amount_prompt_chat_id=None,
+        amount_prompt_message_id=None,
         prefill_amount=None,
     )
     await state.set_state(AddTransactionStates.review)
@@ -328,6 +338,7 @@ async def add_txn_draft_action(
 
     if action == "cancel":
         await callback.answer("Cancelled")
+        await _delete_message_safely(callback.message)
         await state.clear()
         await callback.message.answer("❌ Transaction creation cancelled.")
         return
@@ -381,15 +392,18 @@ async def add_txn_draft_action(
         return
 
     await callback.answer()
+    await _delete_optional_prompts(callback.message.bot, state)
     await state.update_data(pending_field=action)
     await state.set_state(AddTransactionStates.input_optional)
     if action == "txn_date":
-        await callback.message.answer(
+        sent = await callback.message.answer(
             "📅 Pick transaction date (or use <b>Custom Date</b>):",
             reply_markup=txn_recent_dates_keyboard(days=7),
         )
+        await _track_optional_prompt(state, sent)
         return
-    await callback.message.answer(_prompt_for_optional_field(action))
+    sent = await callback.message.answer(_prompt_for_optional_field(action))
+    await _track_optional_prompt(state, sent)
 
 
 @router.callback_query(AddTransactionStates.input_optional, F.data.startswith("txn_datepick:"))
@@ -400,6 +414,7 @@ async def add_txn_pick_recent_date(callback: CallbackQuery, state: FSMContext) -
     choice = callback.data.split(":", maxsplit=1)[1]
     if choice == "back":
         await callback.answer()
+        await _delete_optional_prompts(callback.message.bot, state)
         await state.update_data(pending_field=None)
         await state.set_state(AddTransactionStates.review)
         await _send_txn_draft_menu(callback.message, state)
@@ -408,7 +423,10 @@ async def add_txn_pick_recent_date(callback: CallbackQuery, state: FSMContext) -
 
     if choice == "custom":
         await callback.answer()
-        await callback.message.answer("🗓️ Send transaction date in <b>YYYY-MM-DD</b> (or send <b>skip</b> for today):")
+        await _delete_optional_prompts(callback.message.bot, state)
+        sent = await callback.message.answer("🗓️ Send transaction date in <b>YYYY-MM-DD</b> (or send <b>skip</b> for today):")
+        await _track_optional_prompt(state, sent)
+        await _delete_message_safely(callback.message)
         return
 
     try:
@@ -484,6 +502,7 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
             return
         await state.update_data(cashback_amount=str(cashback), pending_field=None)
 
+    await _delete_optional_prompt_and_answer(message, state)
     await state.set_state(AddTransactionStates.review)
     await _send_txn_draft_menu(message, state)
 
@@ -589,6 +608,46 @@ async def _delete_message_safely(message: Message) -> None:
         return
 
 
+async def _delete_optional_prompt_and_answer(message: Message, state: FSMContext) -> None:
+    await _delete_optional_prompts(message.bot, state)
+    await _delete_message_safely(message)
+
+
+async def _track_optional_prompt(state: FSMContext, message: Message) -> None:
+    data = await state.get_data()
+    refs = list(data.get("optional_prompt_refs") or [])
+    refs.append(f"{message.chat.id}:{message.message_id}")
+    await state.update_data(optional_prompt_refs=refs)
+
+
+async def _delete_optional_prompts(bot, state: FSMContext) -> None:
+    data = await state.get_data()
+    refs = list(data.get("optional_prompt_refs") or [])
+    for ref in refs:
+        try:
+            raw_chat_id, raw_message_id = str(ref).split(":", maxsplit=1)
+            await bot.delete_message(chat_id=int(raw_chat_id), message_id=int(raw_message_id))
+        except Exception:
+            continue
+    await state.update_data(optional_prompt_refs=[])
+
+
+async def _delete_amount_prompt_and_answer(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    prompt_chat_id = data.get("amount_prompt_chat_id")
+    prompt_message_id = data.get("amount_prompt_message_id")
+    if prompt_chat_id and prompt_message_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=int(prompt_chat_id),
+                message_id=int(prompt_message_id),
+            )
+        except TelegramBadRequest:
+            pass
+    await _delete_message_safely(message)
+    await state.update_data(amount_prompt_chat_id=None, amount_prompt_message_id=None)
+
+
 async def _persist_transaction(
     message: Message,
     state: FSMContext,
@@ -687,6 +746,7 @@ async def _persist_transaction(
         await session.commit()
 
     await state.clear()
+    await _delete_message_safely(message)
     await message.answer(
         "✅ <b>Transaction saved</b>\n"
         f"💰 <b>Total:</b> {format_inr(final_amount)}\n"
