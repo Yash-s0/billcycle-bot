@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -21,6 +22,32 @@ from ..states import AddCardStates, EditCardStates
 from .common import ensure_user, get_user_by_telegram_id
 
 router = Router(name=__name__)
+
+
+async def _show_or_update_card_detail(message: Message, state: FSMContext, card: Card) -> None:
+    data = await state.get_data()
+    detail_chat_id = data.get("edit_card_detail_chat_id")
+    detail_message_id = data.get("edit_card_detail_message_id")
+    text = _format_card_summary(card)
+    reply_markup = edit_action_keyboard("edit_card_action")
+
+    if detail_chat_id and detail_message_id:
+        try:
+            await message.bot.edit_message_text(
+                text=text,
+                chat_id=int(detail_chat_id),
+                message_id=int(detail_message_id),
+                reply_markup=reply_markup,
+            )
+            return
+        except TelegramBadRequest:
+            pass
+
+    sent = await message.answer(text, reply_markup=reply_markup)
+    await state.update_data(
+        edit_card_detail_chat_id=sent.chat.id,
+        edit_card_detail_message_id=sent.message_id,
+    )
 
 
 @router.message(Command("add_card"))
@@ -208,6 +235,10 @@ async def manage_cards_command(message: Message, state: FSMContext, session_make
 
 
 @router.callback_query(EditCardStates.card, F.data.startswith("card:"))
+@router.callback_query(EditCardStates.action, F.data.startswith("card:"))
+@router.callback_query(EditCardStates.field, F.data.startswith("card:"))
+@router.callback_query(EditCardStates.input_value, F.data.startswith("card:"))
+@router.callback_query(EditCardStates.confirm_delete, F.data.startswith("card:"))
 async def edit_card_select(callback: CallbackQuery, state: FSMContext, session_maker: async_sessionmaker[AsyncSession]) -> None:
     if not callback.message:
         return
@@ -224,12 +255,9 @@ async def edit_card_select(callback: CallbackQuery, state: FSMContext, session_m
         await state.clear()
         return
 
-    await state.update_data(edit_card_id=card.id)
+    await state.update_data(edit_card_id=card.id, edit_card_pending_field=None)
     await state.set_state(EditCardStates.action)
-    await callback.message.answer(
-        _format_card_summary(card),
-        reply_markup=edit_action_keyboard("edit_card_action"),
-    )
+    await _show_or_update_card_detail(callback.message, state, card)
 
 
 @router.callback_query(EditCardStates.action, F.data.startswith("edit_card_action:"))
