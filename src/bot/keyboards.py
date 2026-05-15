@@ -222,10 +222,43 @@ def edit_confirm_delete_keyboard(prefix: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def edit_txn_select_keyboard(transactions: Sequence[tuple[int, str]]) -> InlineKeyboardMarkup:
+def edit_txn_select_keyboard(
+    transactions: Sequence[tuple[int, str]],
+    offset: int = 0,
+    page_size: int = 10,
+    total: int = 0,
+    prefix: str = "edit_txn_nav",
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for txn_id, label in transactions:
         builder.button(text=label, callback_data=f"edit_txn_pick:{txn_id}")
+    if offset > 0:
+        prev_offset = max(0, offset - page_size)
+        builder.button(text="⬅️ Previous", callback_data=f"{prefix}:{prev_offset}")
+    if offset + page_size < total:
+        next_offset = offset + page_size
+        builder.button(text="Next ➡️", callback_data=f"{prefix}:{next_offset}")
     builder.button(text="❌ Cancel", callback_data="edit_txn_pick:cancel")
-    builder.adjust(1)
+    if offset > 0 or offset + page_size < total:
+        builder.adjust(1, 1, 1)
+    else:
+        builder.adjust(1)
+    return builder.as_markup()
+
+
+def recent_txns_pagination_keyboard(
+    offset: int,
+    page_size: int,
+    total: int,
+    prefix: str = "recent_txns_nav",
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if offset > 0:
+        prev_offset = max(0, offset - page_size)
+        builder.button(text="⬅️ Previous", callback_data=f"{prefix}:{prev_offset}")
+    if offset + page_size < total:
+        next_offset = offset + page_size
+        builder.button(text="Next ➡️", callback_data=f"{prefix}:{next_offset}")
+    if offset > 0 or offset + page_size < total:
+        builder.adjust(2)
     return builder.as_markup()

@@ -7,7 +7,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..keyboards import (
@@ -16,12 +17,13 @@ from ..keyboards import (
     edit_confirm_delete_keyboard,
     edit_txn_fields_keyboard,
     edit_txn_select_keyboard,
+    recent_txns_pagination_keyboard,
     txn_account_keyboard,
     txn_mode_keyboard,
     txn_draft_keyboard,
     txn_recent_dates_keyboard,
 )
-from ..models import Card, Payment, PaymentMode, ReimbursementStatus, SharedExpenseAccess, Transaction, User
+from ..models import Card, Payment, PaymentMode, Person, ReimbursementStatus, SharedExpenseAccess, Transaction, User
 from ..services.reports import RecentTransactionRow, format_inr, list_recent_transactions
 from ..states import AddTransactionStates, EditTransactionStates
 from .common import (
@@ -757,28 +759,104 @@ async def _persist_transaction(
     )
 
 
-@router.message(Command("recent_txns"))
-async def recent_txns_command(message: Message, session_maker: async_sessionmaker[AsyncSession]) -> None:
-    if not message.from_user:
-        return
+RECENT_TXNS_PAGE_SIZE = 10
+EDIT_TXNS_PAGE_SIZE = 10
 
-    async with session_maker() as session:
-        user = await get_user_by_telegram_id(session, message.from_user.id)
-        if not user:
-            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
-            return
 
-        txns = await list_recent_transactions(session, user.id, limit=10)
+async def _count_accessible_transactions(
+    session: AsyncSession,
+    viewer_user_id: int,
+    payment_mode: PaymentMode | None = None,
+    card_id: int | None = None,
+) -> int:
+    conditions = [_txn_is_accessible_clause(viewer_user_id)]
+    if payment_mode is not None:
+        conditions.append(Transaction.payment_mode == payment_mode)
+    if card_id is not None:
+        conditions.append(Transaction.card_id == card_id)
+    count = await session.scalar(select(func.count(Transaction.id)).where(*conditions))
+    return int(count or 0)
 
-    if not txns:
-        await message.answer("📭 No transactions found. Use <b>/add_txn</b>.")
-        return
 
-    own_txns = [txn for txn in txns if txn.owner_user_id == user.id and txn.added_by_user_id == user.id]
-    added_by_others = [txn for txn in txns if txn.owner_user_id == user.id and txn.added_by_user_id != user.id]
-    added_to_others = [txn for txn in txns if txn.owner_user_id != user.id and txn.added_by_user_id == user.id]
+async def _list_accessible_transactions(
+    session: AsyncSession,
+    viewer_user_id: int,
+    limit: int,
+    offset: int,
+    payment_mode: PaymentMode | None = None,
+    card_id: int | None = None,
+) -> list[RecentTransactionRow]:
+    owner_user = aliased(User)
+    added_by_user = aliased(User)
+    conditions = [_txn_is_accessible_clause(viewer_user_id)]
+    if payment_mode is not None:
+        conditions.append(Transaction.payment_mode == payment_mode)
+    if card_id is not None:
+        conditions.append(Transaction.card_id == card_id)
 
-    lines = ["🧾 <b>Recent transactions</b>:"]
+    query = (
+        select(
+            Transaction,
+            Card.card_name,
+            Person.name,
+            owner_user.full_name,
+            added_by_user.full_name,
+        )
+        .outerjoin(Card, Transaction.card_id == Card.id)
+        .outerjoin(Person, Person.id == Transaction.person_id)
+        .join(owner_user, owner_user.id == Transaction.user_id)
+        .join(added_by_user, added_by_user.id == Transaction.added_by_user_id)
+        .where(*conditions)
+        .order_by(Transaction.txn_date.desc(), Transaction.id.desc())
+        .offset(max(offset, 0))
+        .limit(limit)
+    )
+    rows = (await session.execute(query)).all()
+    result: list[RecentTransactionRow] = []
+    for txn, card_name, person_name, owner_name, added_by_name in rows:
+        if txn.payment_mode == PaymentMode.CARD:
+            card_label = card_name or "Card"
+        elif txn.payment_mode == PaymentMode.UPI:
+            card_label = "UPI"
+        else:
+            card_label = "Cash"
+        result.append(
+            RecentTransactionRow(
+                transaction_id=txn.id,
+                card_label=card_label,
+                payment_mode=txn.payment_mode.value,
+                owner_user_id=txn.user_id,
+                owner_name=owner_name,
+                added_by_user_id=txn.added_by_user_id,
+                added_by_name=added_by_name,
+                txn_date=txn.txn_date,
+                amount=txn.amount,
+                discount_amount=txn.discount_amount,
+                cashback_amount=txn.cashback_amount,
+                final_amount=txn.final_amount,
+                category=txn.category or "-",
+                notes=txn.notes or "-",
+                reimbursement_status=txn.reimbursement_status.value,
+                is_for_someone_else=bool(txn.is_for_someone_else),
+                person_name=person_name,
+            )
+        )
+    return result
+
+
+def _build_recent_txns_text(
+    txns: list[RecentTransactionRow],
+    user_id: int,
+    offset: int,
+    page_size: int,
+    total: int,
+) -> str:
+    own_txns = [txn for txn in txns if txn.owner_user_id == user_id and txn.added_by_user_id == user_id]
+    added_by_others = [txn for txn in txns if txn.owner_user_id == user_id and txn.added_by_user_id != user_id]
+    added_to_others = [txn for txn in txns if txn.owner_user_id != user_id and txn.added_by_user_id == user_id]
+    start_no = offset + 1 if total > 0 else 0
+    end_no = min(offset + page_size, total)
+    lines = [f"🧾 <b>Recent transactions</b> ({start_no}-{end_no} of {total}):"]
 
     def _append_txn_block(title: str, rows: list[RecentTransactionRow], include_owner: bool, include_adder: bool) -> None:
         if not rows:
@@ -812,7 +890,6 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
     _append_txn_block("🧾 <b>Transactions you added to others:</b>", added_to_others, include_owner=True, include_adder=False)
 
     if len(lines) == 1:
-        # Fallback: if rows are somehow filtered out from all sections, show generic list.
         for txn in txns:
             owes_amount = txn.final_amount - txn.cashback_amount
             lines.append(
@@ -824,7 +901,82 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
             )
             lines.append("")
 
-    await message.answer("\n".join(lines).strip())
+    return "\n".join(lines).strip()
+
+
+@router.message(Command("recent_txns"))
+async def recent_txns_command(message: Message, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    if not message.from_user:
+        return
+
+    async with session_maker() as session:
+        user = await get_user_by_telegram_id(session, message.from_user.id)
+        if not user:
+            await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
+            return
+        total = await _count_accessible_transactions(session, user.id)
+        txns = await list_recent_transactions(session, user.id, limit=RECENT_TXNS_PAGE_SIZE, offset=0)
+
+    if not txns:
+        await message.answer("📭 No transactions found. Use <b>/add_txn</b>.")
+        return
+
+    text = _build_recent_txns_text(txns, user.id, offset=0, page_size=RECENT_TXNS_PAGE_SIZE, total=total)
+    await message.answer(
+        text,
+        reply_markup=recent_txns_pagination_keyboard(
+            offset=0,
+            page_size=RECENT_TXNS_PAGE_SIZE,
+            total=total,
+            prefix="recent_txns_nav",
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("recent_txns_nav:"))
+async def recent_txns_navigate(callback: CallbackQuery, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    if not callback.message or not callback.from_user:
+        return
+    await callback.answer()
+
+    raw_offset = callback.data.split(":", maxsplit=1)[1]
+    if not raw_offset.isdigit():
+        await callback.answer("Invalid page", show_alert=True)
+        return
+    offset = int(raw_offset)
+
+    async with session_maker() as session:
+        user = await get_user_by_telegram_id(session, callback.from_user.id)
+        if not user:
+            await callback.message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
+            return
+        total = await _count_accessible_transactions(session, user.id)
+        if total <= 0:
+            await callback.message.answer("📭 No transactions found. Use <b>/add_txn</b>.")
+            return
+        safe_offset = min(max(offset, 0), max(total - 1, 0))
+        safe_offset = (safe_offset // RECENT_TXNS_PAGE_SIZE) * RECENT_TXNS_PAGE_SIZE
+        txns = await list_recent_transactions(
+            session,
+            user.id,
+            limit=RECENT_TXNS_PAGE_SIZE,
+            offset=safe_offset,
+        )
+
+    text = _build_recent_txns_text(txns, user.id, offset=safe_offset, page_size=RECENT_TXNS_PAGE_SIZE, total=total)
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=recent_txns_pagination_keyboard(
+                offset=safe_offset,
+                page_size=RECENT_TXNS_PAGE_SIZE,
+                total=total,
+                prefix="recent_txns_nav",
+            ),
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
 
 
 @router.message(Command("edit_txn"))
@@ -837,17 +989,194 @@ async def edit_txn_command(message: Message, state: FSMContext, session_maker: a
         if not user:
             await message.answer("⚠️ <b>No profile found.</b> Use <b>/start</b> first.")
             return
-        txns = await list_recent_transactions(session, user.id, limit=10)
+
+    await state.clear()
+    await state.set_state(EditTransactionStates.mode)
+    await state.update_data(user_id=user.id, edit_filter_mode=None, edit_filter_card_id=None)
+    await message.answer("💳 Choose payment mode to filter transactions:", reply_markup=txn_mode_keyboard("edit_txn_mode"))
+
+
+@router.callback_query(EditTransactionStates.mode, F.data.startswith("edit_txn_mode:"))
+async def edit_txn_select_mode(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+
+    raw_mode = callback.data.split(":", maxsplit=1)[1]
+    if raw_mode not in {PaymentMode.CARD.value, PaymentMode.UPI.value, PaymentMode.CASH.value}:
+        await callback.answer("Invalid mode", show_alert=True)
+        return
+
+    mode = PaymentMode(raw_mode)
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+
+    if mode == PaymentMode.CARD:
+        async with session_maker() as session:
+            cards = (
+                await session.execute(
+                    select(Card)
+                    .where(Card.user_id == user_id)
+                    .order_by(Card.bank_name.asc(), Card.card_name.asc(), Card.id.asc())
+                )
+            ).scalars().all()
+        if not cards:
+            await callback.message.answer("📭 No cards found. Add a card first with <b>/add_card</b>.")
+            await state.clear()
+            return
+        rows = [(card.id, _txn_card_picker_label(card)) for card in cards]
+        await state.update_data(edit_filter_mode=mode.value)
+        await state.set_state(EditTransactionStates.card)
+        await callback.message.answer("💳 Select card to filter:", reply_markup=cards_keyboard(rows, prefix="edit_txn_card", columns=2))
+        return
+
+    async with session_maker() as session:
+        total = await _count_accessible_transactions(session, user_id, payment_mode=mode)
+        txns = await _list_accessible_transactions(
+            session,
+            user_id,
+            limit=EDIT_TXNS_PAGE_SIZE,
+            offset=0,
+            payment_mode=mode,
+            card_id=None,
+        )
 
     if not txns:
-        await message.answer("📭 No transactions found. Use <b>/add_txn</b>.")
+        await callback.message.answer("📭 No matching transactions found for this mode.")
+        await state.clear()
         return
 
     rows = [(txn.transaction_id, _txn_picker_button_label(txn)) for txn in txns]
-    await state.clear()
     await state.set_state(EditTransactionStates.transaction)
-    await state.update_data(user_id=user.id)
-    await message.answer("✏️ Select a transaction to edit:", reply_markup=edit_txn_select_keyboard(rows))
+    await state.update_data(edit_filter_mode=mode.value, edit_filter_card_id=None)
+    await callback.message.answer(
+        "✏️ Select a transaction to edit:",
+        reply_markup=edit_txn_select_keyboard(
+            rows,
+            offset=0,
+            page_size=EDIT_TXNS_PAGE_SIZE,
+            total=total,
+            prefix="edit_txn_nav",
+        ),
+    )
+
+
+@router.callback_query(EditTransactionStates.card, F.data.startswith("edit_txn_card:"))
+async def edit_txn_select_card_filter(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+
+    raw_card_id = callback.data.split(":", maxsplit=1)[1]
+    if not raw_card_id.isdigit():
+        await callback.answer("Invalid card", show_alert=True)
+        return
+    card_id = int(raw_card_id)
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+    mode = PaymentMode(str(data.get("edit_filter_mode") or PaymentMode.CARD.value))
+
+    async with session_maker() as session:
+        card = await session.scalar(select(Card).where(Card.id == card_id, Card.user_id == user_id))
+        if not card:
+            await callback.message.answer("⚠️ Card not found.")
+            await state.clear()
+            return
+
+        total = await _count_accessible_transactions(session, user_id, payment_mode=mode, card_id=card_id)
+        txns = await _list_accessible_transactions(
+            session,
+            user_id,
+            limit=EDIT_TXNS_PAGE_SIZE,
+            offset=0,
+            payment_mode=mode,
+            card_id=card_id,
+        )
+
+    if not txns:
+        await callback.message.answer("📭 No matching transactions found for this card.")
+        await state.clear()
+        return
+
+    rows = [(txn.transaction_id, _txn_picker_button_label(txn)) for txn in txns]
+    await state.set_state(EditTransactionStates.transaction)
+    await state.update_data(edit_filter_card_id=card_id)
+    await callback.message.answer(
+        "✏️ Select a transaction to edit:",
+        reply_markup=edit_txn_select_keyboard(
+            rows,
+            offset=0,
+            page_size=EDIT_TXNS_PAGE_SIZE,
+            total=total,
+            prefix="edit_txn_nav",
+        ),
+    )
+
+
+@router.callback_query(EditTransactionStates.transaction, F.data.startswith("edit_txn_nav:"))
+async def edit_txn_navigate(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    if not callback.message:
+        return
+    await callback.answer()
+
+    raw_offset = callback.data.split(":", maxsplit=1)[1]
+    if not raw_offset.isdigit():
+        await callback.answer("Invalid page", show_alert=True)
+        return
+    offset = int(raw_offset)
+
+    data = await state.get_data()
+    user_id = int(data["user_id"])
+    mode_raw = data.get("edit_filter_mode")
+    mode = _coerce_payment_mode(mode_raw) if mode_raw else None
+    card_id_raw = data.get("edit_filter_card_id")
+    card_id = int(card_id_raw) if card_id_raw is not None else None
+
+    async with session_maker() as session:
+        total = await _count_accessible_transactions(session, user_id, payment_mode=mode, card_id=card_id)
+        if total <= 0:
+            await callback.message.answer("📭 No matching transactions found.")
+            await state.clear()
+            return
+        safe_offset = min(max(offset, 0), max(total - 1, 0))
+        safe_offset = (safe_offset // EDIT_TXNS_PAGE_SIZE) * EDIT_TXNS_PAGE_SIZE
+        txns = await _list_accessible_transactions(
+            session,
+            user_id,
+            limit=EDIT_TXNS_PAGE_SIZE,
+            offset=safe_offset,
+            payment_mode=mode,
+            card_id=card_id,
+        )
+
+    rows = [(txn.transaction_id, _txn_picker_button_label(txn)) for txn in txns]
+    try:
+        await callback.message.edit_text(
+            "✏️ Select a transaction to edit:",
+            reply_markup=edit_txn_select_keyboard(
+                rows,
+                offset=safe_offset,
+                page_size=EDIT_TXNS_PAGE_SIZE,
+                total=total,
+                prefix="edit_txn_nav",
+            ),
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
 
 
 @router.callback_query(EditTransactionStates.transaction, F.data.startswith("edit_txn_pick:"))
@@ -1135,7 +1464,7 @@ async def edit_txn_field_input(message: Message, state: FSMContext, session_make
 
 
 def _txn_picker_button_label(txn: RecentTransactionRow) -> str:
-    label = f"{txn.txn_date.isoformat()} | {format_inr(txn.final_amount)}"
+    label = f"{txn.txn_date.isoformat()} | {format_inr(txn.final_amount)} | {short_text(txn.card_label, 12)}"
     if txn.owner_user_id != txn.added_by_user_id:
         label = f"{label} | {short_text(txn.owner_name, 12)}"
     if txn.is_for_someone_else and txn.person_name:

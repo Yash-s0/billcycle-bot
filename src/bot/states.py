@@ -34,6 +34,8 @@ class EditCardStates(StatesGroup):
 
 
 class EditTransactionStates(StatesGroup):
+    mode = State()
+    card = State()
     transaction = State()
     action = State()
     field = State()

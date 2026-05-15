@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import traceback
 from datetime import date, datetime, timedelta
 from html import escape
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -27,6 +29,15 @@ from .common import card_label, get_user_by_telegram_id, render_pre_table, short
 
 router = Router(name=__name__)
 logger = logging.getLogger(__name__)
+CARD_PICKER_AUTO_DELETE_SECONDS = 120
+
+
+async def _delete_message_after_delay(message: Message, delay_seconds: int) -> None:
+    await asyncio.sleep(max(delay_seconds, 0))
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        return
 
 
 @router.message(Command("who_owes_me"))
@@ -89,7 +100,8 @@ async def card_summary_command(message: Message, session_maker: async_sessionmak
         builder.button(text=short_text(card_label(card), 24), callback_data=f"card_summary:{card.id}")
     builder.adjust(1)
 
-    await message.answer("💳 Select card for summary:", reply_markup=builder.as_markup())
+    sent = await message.answer("💳 Select card for summary:", reply_markup=builder.as_markup())
+    asyncio.create_task(_delete_message_after_delay(sent, CARD_PICKER_AUTO_DELETE_SECONDS))
 
 
 @router.callback_query(F.data.startswith("card_summary:"))
@@ -101,6 +113,10 @@ async def card_summary_selected(
         return
 
     await callback.answer()
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
     _, raw_card_id = callback.data.split(":", maxsplit=1)
     card_id = int(raw_card_id)
 
@@ -149,7 +165,8 @@ async def card_summary_selected(
             )
         )
 
-    await callback.message.answer("\n".join(lines))
+    sent = await callback.message.answer("\n".join(lines))
+    asyncio.create_task(_delete_message_after_delay(sent, CARD_PICKER_AUTO_DELETE_SECONDS))
 
 
 @router.message(Command("report"))
