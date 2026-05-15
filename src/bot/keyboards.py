@@ -94,6 +94,7 @@ def settings_invite_keyboard(prefix: str = "settings_invite") -> InlineKeyboardM
 
 def txn_draft_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    builder.button(text="Category", callback_data="txn_opt:category")
     builder.button(text="Notes", callback_data="txn_opt:notes")
     builder.button(text="Date", callback_data="txn_opt:txn_date")
     builder.button(text="Discount", callback_data="txn_opt:discount_amount")
@@ -104,7 +105,7 @@ def txn_draft_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
         builder.button(text="Paid Back?", callback_data="txn_opt:toggle_paid")
     builder.button(text="Save Transaction", callback_data="txn_opt:save")
     builder.button(text="Cancel", callback_data="txn_opt:cancel")
-    builder.adjust(2, 2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 
@@ -151,6 +152,7 @@ def edit_card_fields_keyboard() -> InlineKeyboardMarkup:
 def edit_txn_fields_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Amount", callback_data="edit_txn_field:amount")
+    builder.button(text="Category", callback_data="edit_txn_field:category")
     builder.button(text="Notes", callback_data="edit_txn_field:notes")
     builder.button(text="Date", callback_data="edit_txn_field:txn_date")
     builder.button(text="Discount", callback_data="edit_txn_field:discount_amount")
@@ -160,7 +162,7 @@ def edit_txn_fields_keyboard(is_for_someone_else: bool) -> InlineKeyboardMarkup:
         builder.button(text="Person Name", callback_data="edit_txn_field:person_name")
         builder.button(text="Paid Back?", callback_data="edit_txn_field:toggle_paid")
     builder.button(text="Back", callback_data="edit_txn_field:back")
-    builder.adjust(2, 2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 
 

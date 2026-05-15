@@ -139,6 +139,7 @@ class Transaction(Base):
         ),
         default=ReimbursementStatus.OWN,
     )
+    category: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

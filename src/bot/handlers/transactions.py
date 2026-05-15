@@ -297,6 +297,7 @@ async def _open_add_txn_draft(message: Message, state: FSMContext, amount: Decim
     await state.update_data(
         payment_mode=payment_mode.value,
         amount=str(amount),
+        category=None,
         notes=None,
         txn_date=date.today().isoformat(),
         discount_amount="0",
@@ -375,7 +376,7 @@ async def add_txn_draft_action(
         await _send_txn_draft_menu(callback.message, state)
         return
 
-    if action not in {"notes", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
+    if action not in {"category", "notes", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
         await callback.answer("Unknown option", show_alert=True)
         return
 
@@ -430,13 +431,13 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
     raw = (message.text or "").strip()
     raw_lower = raw.lower()
 
-    if field not in {"notes", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
+    if field not in {"category", "notes", "txn_date", "discount_amount", "cashback_amount", "person_name"}:
         await state.set_state(AddTransactionStates.review)
         await message.answer("No field selected. Use the buttons below.")
         await _send_txn_draft_menu(message, state)
         return
 
-    if field in {"notes", "person_name"}:
+    if field in {"category", "notes", "person_name"}:
         value = None if raw_lower == "skip" or not raw else raw
         if field == "person_name" and bool(data.get("is_for_someone_else", False)) and not value:
             await message.answer("Person name cannot be empty for 'For Someone Else'. Enter a name:")
@@ -488,6 +489,8 @@ async def add_txn_optional_field_input(message: Message, state: FSMContext) -> N
 
 
 def _prompt_for_optional_field(field: str) -> str:
+    if field == "category":
+        return "Send category (or send 'skip' to clear it):"
     if field == "notes":
         return "Send notes (or send 'skip' to clear it):"
     if field == "txn_date":
@@ -530,6 +533,7 @@ async def _send_txn_draft_menu(message: Message, state: FSMContext) -> None:
         f"Payment mode: {_payment_mode_label(payment_mode)}\n"
         f"Source: {payment_source}\n"
         f"Amount: {format_inr(amount)}\n"
+        f"Category: {data.get('category') or '-'}\n"
         f"Notes: {data.get('notes') or '-'}\n"
         f"Date: {data.get('txn_date', '-')}\n"
         f"Discount: {format_inr(discount_amount)}\n"
@@ -643,6 +647,7 @@ async def _persist_transaction(
             is_for_someone_else=bool(data.get("is_for_someone_else", False)),
             person_id=person_id,
             reimbursement_status=status,
+            category=data.get("category"),
             notes=data.get("notes"),
         )
         session.add(txn)
@@ -719,6 +724,8 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
                 details.append(f"Added by {short_text(txn.added_by_name, 16)}")
             if txn.is_for_someone_else and txn.person_name:
                 details.append(f"For {short_text(txn.person_name, 16)}")
+            category = "-" if txn.category == "-" else short_text(txn.category, 24)
+            details.append(f"Category {category}")
             notes = "-" if txn.notes == "-" else short_text(txn.notes, 40)
             details.append(f"Notes {notes}")
             lines.append(" | ".join(details))
@@ -737,7 +744,7 @@ async def recent_txns_command(message: Message, session_maker: async_sessionmake
             )
             lines.append(
                 f"Cashbk {format_inr(txn.cashback_amount)} | Owes {format_inr(owes_amount)} | "
-                f"Notes {short_text(txn.notes, 40)}"
+                f"Category {short_text(txn.category, 24)} | Notes {short_text(txn.notes, 40)}"
             )
             lines.append("")
 
@@ -984,6 +991,8 @@ async def edit_txn_field_input(message: Message, state: FSMContext, session_make
                 await message.answer("Amount must be a positive number. Enter again:")
                 return
             amount = parsed
+        elif field == "category":
+            txn.category = None if raw_lower == "skip" or not raw else raw
         elif field == "notes":
             txn.notes = None if raw_lower == "skip" or not raw else raw
         elif field == "txn_date":
@@ -1074,6 +1083,7 @@ def _format_txn_summary(txn: Transaction) -> str:
         f"Discount: {format_inr(txn.discount_amount)}\n"
         f"Cashback: {format_inr(txn.cashback_amount)}\n"
         f"Total: {format_inr(txn.final_amount)}\n"
+        f"Category: {txn.category or '-'}\n"
         f"Notes: {txn.notes or '-'}\n"
         f"For someone else: {'Yes' if txn.is_for_someone_else else 'No'}\n"
         f"Reimbursement: {txn.reimbursement_status.value}"
@@ -1083,6 +1093,8 @@ def _format_txn_summary(txn: Transaction) -> str:
 def _edit_txn_field_prompt(field: str) -> str:
     if field == "amount":
         return "Enter new amount:"
+    if field == "category":
+        return "Enter new category, or send 'skip' to clear:"
     if field == "notes":
         return "Enter new notes, or send 'skip' to clear:"
     if field == "txn_date":

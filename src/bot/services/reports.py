@@ -87,6 +87,7 @@ class RecentTransactionRow:
     discount_amount: Decimal
     cashback_amount: Decimal
     final_amount: Decimal
+    category: str
     notes: str
     reimbursement_status: str
     is_for_someone_else: bool
@@ -181,6 +182,7 @@ async def list_recent_transactions(
                 discount_amount=txn.discount_amount,
                 cashback_amount=txn.cashback_amount,
                 final_amount=txn.final_amount,
+                category=txn.category or "-",
                 notes=txn.notes or "-",
                 reimbursement_status=txn.reimbursement_status.value,
                 is_for_someone_else=bool(txn.is_for_someone_else),
