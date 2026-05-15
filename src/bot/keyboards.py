@@ -86,9 +86,33 @@ def report_type_keyboard(prefix: str = "report_type") -> InlineKeyboardMarkup:
 
 def settings_invite_keyboard(prefix: str = "settings_invite") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="Invite", callback_data=f"{prefix}:basic")
+    builder.button(text="Basic Invite", callback_data=f"{prefix}:basic")
     builder.button(text="Invite + Share Expenses", callback_data=f"{prefix}:share")
+    builder.button(text="Manage Shared Access", callback_data=f"{prefix}:manage_share")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def settings_share_people_keyboard(people: Sequence[tuple[int, str]]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for user_id, label in people:
+        builder.button(text=f"Remove: {label}", callback_data=f"settings_share_remove:{user_id}")
+    builder.button(text="Back to Settings", callback_data="settings_share_remove:back")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def settings_share_confirm_keyboard(collaborator_user_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="Yes, Remove",
+        callback_data=f"settings_share_confirm:{collaborator_user_id}:yes",
+    )
+    builder.button(
+        text="No, Keep",
+        callback_data=f"settings_share_confirm:{collaborator_user_id}:no",
+    )
+    builder.adjust(2)
     return builder.as_markup()
 
 

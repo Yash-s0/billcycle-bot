@@ -525,26 +525,42 @@ async def _send_txn_draft_menu(message: Message, state: FSMContext) -> None:
         if is_for_someone_else
         else ReimbursementStatus.OWN.value
     )
-    person_name = str(data.get("person_name") or "-")
+    person_name = str(data.get("person_name") or "").strip()
+    category = str(data.get("category") or "").strip()
+    notes = str(data.get("notes") or "").strip()
+    txn_date = str(data.get("txn_date") or "").strip()
 
-    draft_text = (
-        "Transaction draft\n"
-        f"Account: {owner_label}\n"
-        f"Payment mode: {_payment_mode_label(payment_mode)}\n"
-        f"Source: {payment_source}\n"
-        f"Amount: {format_inr(amount)}\n"
-        f"Category: {data.get('category') or '-'}\n"
-        f"Notes: {data.get('notes') or '-'}\n"
-        f"Date: {data.get('txn_date', '-')}\n"
-        f"Discount: {format_inr(discount_amount)}\n"
-        f"Cashback: {format_inr(cashback_amount)}\n"
-        f"For someone else: {'Yes' if is_for_someone_else else 'No'}\n"
-        f"Person: {person_name}\n"
-        f"Reimbursement: {reimbursement_text}\n"
-        f"Total after discount: {format_inr(final_amount)}\n"
-        f"Owes/Net after cashback: {format_inr(recoverable_amount)}\n\n"
-        "Use the buttons below to update only the fields you need, then Save Transaction."
+    lines = [
+        "Transaction draft",
+        f"Account: {owner_label}",
+        f"Payment mode: {_payment_mode_label(payment_mode)}",
+        f"Source: {payment_source}",
+        f"Amount: {format_inr(amount)}",
+    ]
+    if category:
+        lines.append(f"Category: {category}")
+    if notes:
+        lines.append(f"Notes: {notes}")
+    if txn_date:
+        lines.append(f"Date: {txn_date}")
+    if discount_amount > 0:
+        lines.append(f"Discount: {format_inr(discount_amount)}")
+    if cashback_amount > 0:
+        lines.append(f"Cashback: {format_inr(cashback_amount)}")
+    if is_for_someone_else:
+        lines.append("For someone else: Yes")
+        if person_name:
+            lines.append(f"Person: {person_name}")
+        lines.append(f"Reimbursement: {reimbursement_text}")
+    lines.extend(
+        [
+            f"Total after discount: {format_inr(final_amount)}",
+            f"Owes/Net after cashback: {format_inr(recoverable_amount)}",
+            "",
+            "Use the buttons below to update only the fields you need, then Save Transaction.",
+        ]
     )
+    draft_text = "\n".join(lines)
     reply_markup = txn_draft_keyboard(is_for_someone_else=is_for_someone_else)
     draft_message_id_raw = data.get("draft_message_id")
     draft_chat_id_raw = data.get("draft_chat_id")
