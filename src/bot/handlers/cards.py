@@ -230,7 +230,7 @@ async def manage_cards_command(message: Message, state: FSMContext, session_make
     rows = [(card.id, f"{card.card_name} | {card.bank_name}") for card in cards]
     await state.clear()
     await state.set_state(EditCardStates.card)
-    await state.update_data(user_id=user.id)
+    await state.update_data(user_id=user.id, edit_card_has_changes=False)
     await message.answer("🧩 Select a card to manage:", reply_markup=cards_keyboard(rows, columns=2))
 
 
@@ -255,7 +255,7 @@ async def edit_card_select(callback: CallbackQuery, state: FSMContext, session_m
         await state.clear()
         return
 
-    await state.update_data(edit_card_id=card.id, edit_card_pending_field=None)
+    await state.update_data(edit_card_id=card.id, edit_card_pending_field=None, edit_card_has_changes=False)
     await state.set_state(EditCardStates.action)
     await _show_or_update_card_detail(callback.message, state, card)
 
@@ -268,8 +268,13 @@ async def edit_card_action(callback: CallbackQuery, state: FSMContext) -> None:
     action = callback.data.split(":", maxsplit=1)[1]
 
     if action == "cancel":
+        data = await state.get_data()
+        has_changes = bool(data.get("edit_card_has_changes", False))
         await state.clear()
-        await callback.message.answer("❌ Edit card cancelled.")
+        if has_changes:
+            await callback.message.answer("✅ Edit session closed. Your saved changes are kept.")
+        else:
+            await callback.message.answer("❌ Edit card cancelled.")
         return
     if action == "delete":
         await state.set_state(EditCardStates.confirm_delete)
@@ -380,6 +385,7 @@ async def edit_card_field_input(message: Message, state: FSMContext, session_mak
         summary = _format_card_summary(card)
 
     await state.update_data(edit_card_pending_field=None)
+    await state.update_data(edit_card_has_changes=True)
     await state.set_state(EditCardStates.field)
     await message.answer("✅ <b>Updated</b>\n" + summary, reply_markup=edit_card_fields_keyboard())
 
