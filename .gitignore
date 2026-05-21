@@ -224,3 +224,26 @@ __marimo__/
 data/
 *.sqlite3
 *.db
+
+# Flutter
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/build/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/android/.gradle/
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+
+# Node / Cloudflare worker
+**/node_modules/
+**/.wrangler/
+**/.npm/
+**/dist/
+
+# Keep Flutter app source code (root rule `lib/` is for Python packaging)
+!apps/mobile/lib/
+!apps/mobile/lib/**

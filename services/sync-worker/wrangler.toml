@@ -1,0 +1,9 @@
+name = "billcycle-sync-worker"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "billcycle-sync"
+database_id = "replace-with-your-d1-id"
+migrations_dir = "migrations"
