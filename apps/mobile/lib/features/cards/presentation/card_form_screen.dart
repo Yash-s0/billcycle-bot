@@ -6,6 +6,9 @@ import 'package:uuid/uuid.dart';
 import '../../../core/contracts/providers.dart';
 import '../../../core/validation/validators.dart';
 import '../../../core/widgets/ui_primitives.dart';
+import '../data/card_scan_service.dart';
+import 'card_scanner_screen.dart';
+import '../domain/card_scan_result.dart';
 import '../domain/card_model.dart';
 
 class CardFormScreen extends ConsumerStatefulWidget {
@@ -30,7 +33,9 @@ class _CardFormScreenState extends ConsumerState<CardFormScreen> {
   final TextEditingController _notes = TextEditingController();
 
   bool _loading = false;
+  bool _scanning = false;
   CardModel? _editing;
+  final CardScanService _cardScanService = CardScanService();
 
   @override
   void initState() {
@@ -64,6 +69,7 @@ class _CardFormScreenState extends ConsumerState<CardFormScreen> {
     _dueDay.dispose();
     _limit.dispose();
     _notes.dispose();
+    _cardScanService.dispose();
     super.dispose();
   }
 
@@ -99,6 +105,32 @@ class _CardFormScreenState extends ConsumerState<CardFormScreen> {
                         helperText: 'Tip: include last 4 digits for notification matching',
                       ),
                       validator: (String? value) => Validators.requiredText(value, field: 'Card nickname'),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _scanning ? null : _scanFromInAppCamera,
+                            icon: _scanning
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.document_scanner_outlined),
+                            label: Text(_scanning ? 'Scanning...' : 'Scan card'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _scanning ? null : () => _scanCardAndAutofill(fromGallery: true),
+                            icon: const Icon(Icons.photo_library_outlined),
+                            label: const Text('Gallery'),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 12),
                     Row(
@@ -156,6 +188,211 @@ class _CardFormScreenState extends ConsumerState<CardFormScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Future<void> _scanCardAndAutofill({required bool fromGallery}) async {
+    setState(() {
+      _scanning = true;
+    });
+
+    try {
+      final CardScanParseResult? parsed = fromGallery ? await _cardScanService.scanFromGallery() : null;
+      if (!mounted) {
+        return;
+      }
+      if (parsed == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(fromGallery ? 'No image selected.' : 'Card scan cancelled.')),
+        );
+        return;
+      }
+
+      final CardScanConfirmedResult? confirmed = await _confirmParsedResult(parsed);
+      if (!mounted || confirmed == null) {
+        return;
+      }
+      _applyConfirmedResult(confirmed);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Card scan failed. Please try again.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _scanFromInAppCamera() async {
+    if (_scanning) {
+      return;
+    }
+
+    setState(() {
+      _scanning = true;
+    });
+
+    try {
+      final CardScanConfirmedResult? result = await Navigator.of(context).push<CardScanConfirmedResult>(
+        MaterialPageRoute<CardScanConfirmedResult>(
+          builder: (_) => const CardScannerScreen(),
+        ),
+      );
+
+      if (!mounted) {
+        return;
+      }
+      if (result == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Scan cancelled.')),
+        );
+        return;
+      }
+
+      _applyConfirmedResult(result);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to open scanner. Please try again.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _scanning = false;
+        });
+      }
+    }
+  }
+
+  void _applyConfirmedResult(CardScanConfirmedResult confirmed) {
+    bool updatedAny = false;
+    if (_bank.text.trim().isEmpty && confirmed.bankName.trim().isNotEmpty) {
+      _bank.text = confirmed.bankName.trim();
+      updatedAny = true;
+    }
+
+    if (confirmed.last4.trim().length == 4) {
+      final String current = _name.text.trim();
+      if (current.isEmpty) {
+        _name.text = 'Card ${confirmed.last4.trim()}';
+        updatedAny = true;
+      } else if (!current.contains(confirmed.last4.trim())) {
+        _name.text = '$current ${confirmed.last4.trim()}';
+        updatedAny = true;
+      }
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          updatedAny
+              ? 'Scanned card details applied.'
+              : 'Details confirmed. Fields were already filled.',
+        ),
+      ),
+    );
+  }
+
+  Future<CardScanConfirmedResult?> _confirmParsedResult(CardScanParseResult parsed) async {
+    final TextEditingController bankController = TextEditingController(text: parsed.suggestedBank ?? '');
+    final TextEditingController last4Controller = TextEditingController(text: parsed.suggestedLast4 ?? '');
+
+    final bool? apply = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (BuildContext context) {
+        final bool hasSuggestions = parsed.hasAnySuggestion;
+        final String guidance = hasSuggestions
+            ? 'Verify or edit detected details before applying.'
+            : 'Could not confidently detect details. You can edit and apply manually.';
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 8,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Confirm card details', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(guidance),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: bankController,
+                decoration: const InputDecoration(labelText: 'Bank name'),
+              ),
+              const SizedBox(height: 10),
+              TextFormField(
+                controller: last4Controller,
+                keyboardType: TextInputType.number,
+                maxLength: 4,
+                decoration: const InputDecoration(labelText: 'Card last 4 digits'),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                parsed.ocrSnippet.isEmpty ? 'No OCR text available.' : 'OCR: ${parsed.ocrSnippet}',
+                style: Theme.of(context).textTheme.bodySmall,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: const Text('Retake'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: () {
+                        final String bank = bankController.text.trim();
+                        final String last4 = last4Controller.text.trim();
+                        if (bank.isEmpty || last4.length != 4) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Enter valid bank name and 4-digit last4.')),
+                          );
+                          return;
+                        }
+                        Navigator.of(context).pop(true);
+                      },
+                      child: const Text('Use these details'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (apply != true) {
+      return null;
+    }
+    return CardScanConfirmedResult(
+      bankName: bankController.text.trim(),
+      last4: last4Controller.text.trim(),
+      rawOcrText: parsed.ocrSnippet,
     );
   }
 
