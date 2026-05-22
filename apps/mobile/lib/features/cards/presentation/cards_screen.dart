@@ -6,6 +6,7 @@ import '../../../core/contracts/providers.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/async_value_view.dart';
 import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/ui_primitives.dart';
 import '../application/cards_providers.dart';
 import '../domain/card_model.dart';
 
@@ -38,52 +39,73 @@ class CardsScreen extends ConsumerWidget {
             itemBuilder: (BuildContext context, int index) {
               final CardModel card = value[index];
               return Card(
-                child: ListTile(
-                  title: Text(card.label),
-                  subtitle: Text(
-                    'Billing day ${card.billingDay} • Due day ${card.dueDay}\n'
-                    'Limit: ${card.creditLimit == null ? '-' : formatCurrency(card.creditLimit!)}',
-                  ),
-                  isThreeLine: true,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(18),
                   onTap: () => context.push('/cards/${card.id}/summary'),
-                  trailing: PopupMenuButton<String>(
-                    onSelected: (String selected) async {
-                      if (selected == 'edit') {
-                        context.push('/cards/${card.id}/edit');
-                        return;
-                      }
-                      if (selected == 'delete') {
-                        final bool? confirmed = await showDialog<bool>(
-                          context: context,
-                          builder: (BuildContext context) {
-                            return AlertDialog(
-                              title: const Text('Delete card?'),
-                              content: const Text(
-                                'Deleting this card also impacts linked transactions.',
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 14, 10, 14),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                card.label,
+                                style: Theme.of(context).textTheme.titleMedium,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                               ),
-                              actions: <Widget>[
-                                TextButton(
-                                  onPressed: () => Navigator.of(context).pop(false),
-                                  child: const Text('Cancel'),
-                                ),
-                                FilledButton(
-                                  onPressed: () => Navigator.of(context).pop(true),
-                                  child: const Text('Delete'),
-                                ),
-                              ],
-                            );
-                          },
-                        );
+                              const SizedBox(height: 8),
+                              UiKeyValueRow(label: 'Billing day', value: '${card.billingDay}'),
+                              UiKeyValueRow(label: 'Due day', value: '${card.dueDay}'),
+                              UiKeyValueRow(
+                                label: 'Credit limit',
+                                value: card.creditLimit == null ? '-' : formatCurrency(card.creditLimit!),
+                              ),
+                            ],
+                          ),
+                        ),
+                        PopupMenuButton<String>(
+                          onSelected: (String selected) async {
+                            if (selected == 'edit') {
+                              context.push('/cards/${card.id}/edit');
+                              return;
+                            }
+                            if (selected == 'delete') {
+                              final bool? confirmed = await showDialog<bool>(
+                                context: context,
+                                builder: (BuildContext context) {
+                                  return AlertDialog(
+                                    title: const Text('Delete card?'),
+                                    content: const Text('Deleting this card also impacts linked transactions.'),
+                                    actions: <Widget>[
+                                      TextButton(
+                                        onPressed: () => Navigator.of(context).pop(false),
+                                        child: const Text('Cancel'),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () => Navigator.of(context).pop(true),
+                                        child: const Text('Delete'),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              );
 
-                        if (confirmed == true) {
-                          await ref.read(cardsRepositoryProvider).deleteById(card.id);
-                        }
-                      }
-                    },
-                    itemBuilder: (_) => const <PopupMenuEntry<String>>[
-                      PopupMenuItem<String>(value: 'edit', child: Text('Edit')),
-                      PopupMenuItem<String>(value: 'delete', child: Text('Delete')),
-                    ],
+                              if (confirmed == true) {
+                                await ref.read(cardsRepositoryProvider).deleteById(card.id);
+                              }
+                            }
+                          },
+                          itemBuilder: (_) => const <PopupMenuEntry<String>>[
+                            PopupMenuItem<String>(value: 'edit', child: Text('Edit')),
+                            PopupMenuItem<String>(value: 'delete', child: Text('Delete')),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               );

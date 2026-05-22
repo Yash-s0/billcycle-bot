@@ -38,6 +38,7 @@ class TransactionsRepositoryImpl implements TransactionsRepository {
     });
   }
 
+  @override
   Future<TransactionModel?> findById(String id) async {
     final List<Map<String, Object?>> rows = await _database.query(
       'SELECT * FROM transactions WHERE id = ? LIMIT 1',

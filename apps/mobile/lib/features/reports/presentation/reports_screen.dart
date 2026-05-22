@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/async_value_view.dart';
+import '../../../core/widgets/ui_primitives.dart';
 import '../application/reports_providers.dart';
 import '../domain/report_models.dart';
 
@@ -19,9 +20,10 @@ class ReportsScreen extends ConsumerWidget {
       body: Column(
         children: <Widget>[
           Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
             child: Wrap(
               spacing: 8,
+              runSpacing: 8,
               children: <Widget>[
                 ChoiceChip(
                   label: const Text('Today'),
@@ -54,55 +56,47 @@ class ReportsScreen extends ConsumerWidget {
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 12),
-                    _metric('Total spent', formatCurrency(data.totalSpent)),
-                    _metric('Total discounts', formatCurrency(data.totalDiscount)),
-                    _metric('Total cashback', formatCurrency(data.totalCashback)),
-                    _metric('Card bill to repay', formatCurrency(data.cardBillToRepay)),
-                    _metric('Amount owed by others', formatCurrency(data.amountOwedByOthers)),
-                    const SizedBox(height: 12),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text('Top notes', style: Theme.of(context).textTheme.titleMedium),
-                            const SizedBox(height: 8),
-                            if (data.topNotes.isEmpty)
-                              const Text('No notes')
-                            else
-                              for (final MapEntry<String, double> item in data.topNotes)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 6),
-                                  child: Text('${item.key}: ${formatCurrency(item.value)}'),
-                                ),
-                          ],
-                        ),
+                    UiMetricCard(title: 'Total spent', value: formatCurrency(data.totalSpent)),
+                    UiMetricCard(title: 'Total discounts', value: formatCurrency(data.totalDiscount)),
+                    UiMetricCard(title: 'Total cashback', value: formatCurrency(data.totalCashback)),
+                    UiMetricCard(title: 'Card bill to repay', value: formatCurrency(data.cardBillToRepay)),
+                    UiMetricCard(title: 'Amount owed by others', value: formatCurrency(data.amountOwedByOthers)),
+                    const SizedBox(height: 8),
+                    UiSectionCard(
+                      title: 'Top notes',
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          if (data.topNotes.isEmpty)
+                            const Text('No notes')
+                          else
+                            for (final MapEntry<String, double> item in data.topNotes)
+                              UiKeyValueRow(label: item.key, value: formatCurrency(item.value)),
+                        ],
                       ),
                     ),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text('Spend breakdown', style: Theme.of(context).textTheme.titleMedium),
-                            const SizedBox(height: 8),
-                            if (data.breakdown.isEmpty)
-                              const Text('No transactions')
-                            else
-                              for (final CardBreakdownItem item in data.breakdown)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: Text(
-                                    '${item.label}: ${formatCurrency(item.totalBilled)} '
-                                    '(discount ${formatCurrency(item.totalDiscount)}, '
-                                    'cashback ${formatCurrency(item.totalCashback)}, '
-                                    'net ${formatCurrency(item.effectiveNet)})',
-                                  ),
-                                ),
-                          ],
-                        ),
+                    UiSectionCard(
+                      title: 'Spend breakdown',
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          if (data.breakdown.isEmpty)
+                            const Text('No transactions')
+                          else
+                            for (final CardBreakdownItem item in data.breakdown)
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: <Widget>[
+                                  Text(item.label, style: Theme.of(context).textTheme.titleSmall),
+                                  const SizedBox(height: 4),
+                                  UiKeyValueRow(label: 'Billed', value: formatCurrency(item.totalBilled)),
+                                  UiKeyValueRow(label: 'Discount', value: formatCurrency(item.totalDiscount)),
+                                  UiKeyValueRow(label: 'Cashback', value: formatCurrency(item.totalCashback)),
+                                  UiKeyValueRow(label: 'Net', value: formatCurrency(item.effectiveNet)),
+                                  const Divider(height: 18),
+                                ],
+                              ),
+                        ],
                       ),
                     ),
                   ],
@@ -111,15 +105,6 @@ class ReportsScreen extends ConsumerWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _metric(String label, String value) {
-    return Card(
-      child: ListTile(
-        title: Text(label),
-        trailing: Text(value),
       ),
     );
   }

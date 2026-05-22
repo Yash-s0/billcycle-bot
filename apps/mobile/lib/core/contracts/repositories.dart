@@ -24,6 +24,7 @@ abstract class TransactionsRepository {
     int limit = 10,
     int offset = 0,
   });
+  Future<TransactionModel?> findById(String id);
 
   Future<void> upsert(TransactionModel transaction);
   Future<void> deleteById(String id);

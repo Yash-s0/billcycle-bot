@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import '../../../core/contracts/providers.dart';
 import '../../../core/db/table_names.dart';
 import '../../../core/validation/validators.dart';
+import '../../../core/widgets/ui_primitives.dart';
 import '../../cards/application/cards_providers.dart';
 import '../../cards/domain/card_model.dart';
 import '../domain/payment_mode.dart';
@@ -51,9 +52,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
   }
 
   Future<void> _loadTransaction() async {
-    final TransactionModel? txn = await ref
-        .read(transactionsRepositoryProvider)
-        .findById(widget.transactionId!);
+    final TransactionModel? txn = await ref.read(transactionsRepositoryProvider).findById(widget.transactionId!);
     if (!mounted || txn == null) {
       return;
     }
@@ -89,137 +88,177 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     final AsyncValue<List<CardModel>> cards = ref.watch(cardsStreamProvider);
 
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         title: Text(widget.transactionId == null ? 'Add transaction' : 'Edit transaction'),
       ),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: <Widget>[
-            DropdownButtonFormField<PaymentMode>(
-              initialValue: _mode,
-              items: PaymentMode.values
-                  .map(
-                    (PaymentMode mode) => DropdownMenuItem<PaymentMode>(
-                      value: mode,
-                      child: Text(mode.name.toUpperCase()),
+      body: SafeArea(
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            children: <Widget>[
+              UiSectionCard(
+                title: 'Payment details',
+                child: Column(
+                  children: <Widget>[
+                    DropdownButtonFormField<PaymentMode>(
+                      initialValue: _mode,
+                      items: PaymentMode.values
+                          .map(
+                            (PaymentMode mode) => DropdownMenuItem<PaymentMode>(
+                              value: mode,
+                              child: Text(mode.name.toUpperCase()),
+                            ),
+                          )
+                          .toList(growable: false),
+                      onChanged: (PaymentMode? mode) {
+                        if (mode == null) {
+                          return;
+                        }
+                        setState(() {
+                          _mode = mode;
+                          if (_mode != PaymentMode.card) {
+                            _cardId = null;
+                          }
+                        });
+                      },
+                      decoration: const InputDecoration(labelText: 'Payment mode'),
                     ),
-                  )
-                  .toList(growable: false),
-              onChanged: (PaymentMode? mode) {
-                if (mode == null) {
-                  return;
-                }
-                setState(() {
-                  _mode = mode;
-                  if (_mode != PaymentMode.card) {
-                    _cardId = null;
-                  }
-                });
-              },
-              decoration: const InputDecoration(labelText: 'Payment mode'),
-            ),
-            const SizedBox(height: 12),
-            if (_mode == PaymentMode.card)
-              cards.when(
-                data: (List<CardModel> data) {
-                  return DropdownButtonFormField<String>(
-                    initialValue: _cardId,
-                    items: data
-                        .map(
-                          (CardModel card) => DropdownMenuItem<String>(
-                            value: card.id,
-                            child: Text(card.label),
+                    const SizedBox(height: 12),
+                    if (_mode == PaymentMode.card)
+                      cards.when(
+                        data: (List<CardModel> data) {
+                          return DropdownButtonFormField<String>(
+                            initialValue: _cardId,
+                            items: data
+                                .map(
+                                  (CardModel card) => DropdownMenuItem<String>(
+                                    value: card.id,
+                                    child: Text(
+                                      card.label,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                )
+                                .toList(growable: false),
+                            onChanged: (String? value) => setState(() => _cardId = value),
+                            validator: (String? value) => value == null ? 'Select a card' : null,
+                            decoration: const InputDecoration(labelText: 'Card'),
+                          );
+                        },
+                        loading: () => const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: LinearProgressIndicator(),
+                        ),
+                        error: (_, __) => const Text('Unable to load cards'),
+                      ),
+                    if (_mode == PaymentMode.card) const SizedBox(height: 12),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: TextFormField(
+                            controller: _amount,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'Amount'),
+                            validator: (String? value) => Validators.positiveAmount(value),
                           ),
-                        )
-                        .toList(growable: false),
-                    onChanged: (String? value) => setState(() => _cardId = value),
-                    validator: (String? value) => value == null ? 'Select a card' : null,
-                    decoration: const InputDecoration(labelText: 'Card'),
-                  );
-                },
-                loading: () => const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: LinearProgressIndicator(),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _date,
+                            decoration: const InputDecoration(
+                              labelText: 'Date',
+                              helperText: 'YYYY-MM-DD',
+                            ),
+                            validator: (String? value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Date is required';
+                              }
+                              return DateTime.tryParse(value.trim()) == null ? 'Invalid date' : null;
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: TextFormField(
+                            controller: _discount,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'Discount'),
+                            validator: (String? value) => Validators.nonNegativeAmount(value, field: 'Discount'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _cashback,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            decoration: const InputDecoration(labelText: 'Cashback'),
+                            validator: (String? value) => Validators.nonNegativeAmount(value, field: 'Cashback'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _category,
+                      decoration: const InputDecoration(labelText: 'Category (optional)'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _notes,
+                      maxLines: 3,
+                      decoration: const InputDecoration(labelText: 'Notes (optional)'),
+                    ),
+                  ],
                 ),
-                error: (_, __) => const Text('Unable to load cards'),
               ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _amount,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Amount'),
-              validator: (String? value) => Validators.positiveAmount(value),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _discount,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Discount'),
-              validator: (String? value) => Validators.nonNegativeAmount(value, field: 'Discount'),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _cashback,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Cashback'),
-              validator: (String? value) => Validators.nonNegativeAmount(value, field: 'Cashback'),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _date,
-              decoration: const InputDecoration(labelText: 'Date (YYYY-MM-DD)'),
-              validator: (String? value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Date is required';
-                }
-                return DateTime.tryParse(value.trim()) == null ? 'Invalid date' : null;
-              },
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _category,
-              decoration: const InputDecoration(labelText: 'Category (optional)'),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _notes,
-              maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Notes (optional)'),
-            ),
-            const SizedBox(height: 12),
-            SwitchListTile(
-              value: _forSomeoneElse,
-              onChanged: (bool value) => setState(() => _forSomeoneElse = value),
-              title: const Text('For someone else'),
-            ),
-            if (_forSomeoneElse) ...<Widget>[
-              TextFormField(
-                controller: _personName,
-                decoration: const InputDecoration(labelText: 'Person name'),
-                validator: (String? value) => _forSomeoneElse
-                    ? Validators.requiredText(value, field: 'Person name')
-                    : null,
+              const SizedBox(height: 8),
+              UiSectionCard(
+                title: 'Split / reimbursement',
+                child: Column(
+                  children: <Widget>[
+                    SwitchListTile(
+                      value: _forSomeoneElse,
+                      onChanged: (bool value) => setState(() => _forSomeoneElse = value),
+                      title: const Text('For someone else'),
+                    ),
+                    if (_forSomeoneElse) ...<Widget>[
+                      TextFormField(
+                        controller: _personName,
+                        decoration: const InputDecoration(labelText: 'Person name'),
+                        validator: (String? value) => _forSomeoneElse ? Validators.requiredText(value, field: 'Person name') : null,
+                      ),
+                      const SizedBox(height: 8),
+                      SwitchListTile(
+                        value: _paidBack,
+                        onChanged: (bool value) => setState(() => _paidBack = value),
+                        title: const Text('Already paid back'),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              SwitchListTile(
-                value: _paidBack,
-                onChanged: (bool value) => setState(() => _paidBack = value),
-                title: const Text('Already paid back'),
+              const SizedBox(height: 14),
+              FilledButton(
+                onPressed: _loading ? null : _save,
+                child: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Save transaction'),
               ),
             ],
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: _loading ? null : _save,
-              child: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Save transaction'),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -288,9 +327,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
       txnDate: date,
       isForSomeoneElse: _forSomeoneElse,
       personId: personId,
-      reimbursementStatus: !_forSomeoneElse
-          ? ReimbursementStatus.own
-          : (_paidBack ? ReimbursementStatus.paid : ReimbursementStatus.pending),
+      reimbursementStatus: !_forSomeoneElse ? ReimbursementStatus.own : (_paidBack ? ReimbursementStatus.paid : ReimbursementStatus.pending),
       category: _category.text.trim().isEmpty ? null : _category.text.trim(),
       notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
       createdAt: _editing?.createdAt ?? now,

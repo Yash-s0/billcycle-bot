@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/async_value_view.dart';
 import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/ui_primitives.dart';
 import '../application/receivables_providers.dart';
 import '../domain/person_pending_summary.dart';
 
@@ -30,15 +31,32 @@ class ReceivablesScreen extends ConsumerWidget {
             itemCount: value.length,
             itemBuilder: (BuildContext context, int index) {
               final PersonPendingSummary item = value[index];
-              return Card(
-                child: ListTile(
-                  title: Text(item.personName),
-                  subtitle: Text(
-                    'Owes ${formatCurrency(item.pendingAmount)} '
-                    '• Cashback ${formatCurrency(item.cashbackAmount)} '
-                    '• Transactions ${item.transactionCount}',
-                  ),
-                  trailing: Text(formatCurrency(item.totalAmount)),
+              return UiSectionCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            item.personName,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          formatCurrency(item.totalAmount),
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    UiKeyValueRow(label: 'Pending', value: formatCurrency(item.pendingAmount)),
+                    UiKeyValueRow(label: 'Cashback', value: formatCurrency(item.cashbackAmount)),
+                    UiKeyValueRow(label: 'Transactions', value: '${item.transactionCount}'),
+                  ],
                 ),
               );
             },

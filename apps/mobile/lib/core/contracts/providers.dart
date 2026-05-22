@@ -23,7 +23,7 @@ final cardsRepositoryProvider = Provider<CardsRepository>(
   (Ref ref) => CardsRepositoryImpl(ref.watch(appDatabaseProvider)),
 );
 
-final transactionsRepositoryProvider = Provider<TransactionsRepositoryImpl>(
+final transactionsRepositoryProvider = Provider<TransactionsRepository>(
   (Ref ref) => TransactionsRepositoryImpl(ref.watch(appDatabaseProvider)),
 );
 

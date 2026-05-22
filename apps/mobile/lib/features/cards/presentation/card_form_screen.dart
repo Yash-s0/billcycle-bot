@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/contracts/providers.dart';
 import '../../../core/validation/validators.dart';
+import '../../../core/widgets/ui_primitives.dart';
 import '../domain/card_model.dart';
 
 class CardFormScreen extends ConsumerStatefulWidget {
@@ -69,70 +70,90 @@ class _CardFormScreenState extends ConsumerState<CardFormScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(title: Text(widget.cardId == null ? 'Add card' : 'Edit card')),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: <Widget>[
-            TextFormField(
-              controller: _bank,
-              decoration: const InputDecoration(labelText: 'Bank name'),
-              validator: (String? value) => Validators.requiredText(value, field: 'Bank name'),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _name,
-              decoration: const InputDecoration(labelText: 'Card nickname'),
-              validator: (String? value) => Validators.requiredText(value, field: 'Card nickname'),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: TextFormField(
-                    controller: _billingDay,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Billing day'),
-                    validator: (String? value) => Validators.cardDay(value, field: 'Billing day'),
-                  ),
+      body: SafeArea(
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            children: <Widget>[
+              UiSectionCard(
+                title: 'Card details',
+                child: Column(
+                  children: <Widget>[
+                    TextFormField(
+                      controller: _bank,
+                      decoration: const InputDecoration(
+                        labelText: 'Bank name',
+                        helperText: 'Example: HDFC, ICICI, Axis',
+                      ),
+                      validator: (String? value) => Validators.requiredText(value, field: 'Bank name'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _name,
+                      decoration: const InputDecoration(
+                        labelText: 'Card nickname',
+                        helperText: 'Tip: include last 4 digits for notification matching',
+                      ),
+                      validator: (String? value) => Validators.requiredText(value, field: 'Card nickname'),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: TextFormField(
+                            controller: _billingDay,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'Billing day'),
+                            validator: (String? value) => Validators.cardDay(value, field: 'Billing day'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _dueDay,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(labelText: 'Due day'),
+                            validator: (String? value) => Validators.cardDay(value, field: 'Due day'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _limit,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Credit limit (optional)',
+                        helperText: 'Leave empty if not applicable',
+                      ),
+                      validator: (String? value) => Validators.nonNegativeAmount(value, field: 'Credit limit'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _notes,
+                      maxLines: 3,
+                      decoration: const InputDecoration(labelText: 'Notes (optional)'),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: _dueDay,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Due day'),
-                    validator: (String? value) => Validators.cardDay(value, field: 'Due day'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _limit,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Credit limit (optional)'),
-              validator: (String? value) => Validators.nonNegativeAmount(value, field: 'Credit limit'),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _notes,
-              maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Notes (optional)'),
-            ),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: _loading ? null : _save,
-              child: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Save card'),
-            ),
-          ],
+              ),
+              const SizedBox(height: 14),
+              FilledButton(
+                onPressed: _loading ? null : _save,
+                child: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Save card'),
+              ),
+            ],
+          ),
         ),
       ),
     );

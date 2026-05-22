@@ -29,21 +29,33 @@ class AsyncValueView<T> extends StatelessWidget {
       },
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (Object error, StackTrace stackTrace) => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Text(
-              'Something went wrong',
-              style: Theme.of(context).textTheme.titleMedium,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  'Something went wrong',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  error.toString(),
+                  textAlign: TextAlign.center,
+                  softWrap: true,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 14),
+                FilledButton(
+                  onPressed: onRetry,
+                  child: const Text('Retry'),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(error.toString(), textAlign: TextAlign.center),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: onRetry,
-              child: const Text('Retry'),
-            ),
-          ],
+          ),
         ),
       ),
     );

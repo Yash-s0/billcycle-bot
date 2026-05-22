@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/contracts/providers.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/async_value_view.dart';
+import '../../../core/widgets/ui_primitives.dart';
 import '../../reports/domain/report_models.dart';
 
 class CardSummaryScreen extends ConsumerWidget {
@@ -38,27 +39,30 @@ class CardSummaryScreen extends ConsumerWidget {
           return ListView(
             padding: const EdgeInsets.all(16),
             children: <Widget>[
-              Text(value.cardLabel, style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 8),
-              Text('Cycle: ${formatDate(value.cycleStart)} → ${formatDate(value.cycleEnd)}'),
-              const SizedBox(height: 12),
-              _metric('Total billed', formatCurrency(value.totalSpend)),
-              _metric('Discounts', formatCurrency(value.totalDiscount)),
-              _metric('Cashback', formatCurrency(value.totalCashback)),
-              _metric('Pending receivables', formatCurrency(value.pendingReceivables)),
-              _metric('Upcoming due date', formatDate(value.upcomingDueDate)),
+              UiSectionCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(value.cardLabel, style: Theme.of(context).textTheme.headlineSmall),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Cycle: ${formatDate(value.cycleStart)} → ${formatDate(value.cycleEnd)}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              UiMetricCard(title: 'Total billed', value: formatCurrency(value.totalSpend)),
+              UiMetricCard(title: 'Discounts', value: formatCurrency(value.totalDiscount)),
+              UiMetricCard(title: 'Cashback', value: formatCurrency(value.totalCashback)),
+              UiMetricCard(
+                title: 'Pending receivables',
+                value: formatCurrency(value.pendingReceivables),
+              ),
+              UiMetricCard(title: 'Upcoming due date', value: formatDate(value.upcomingDueDate)),
             ],
           );
         },
-      ),
-    );
-  }
-
-  Widget _metric(String title, String value) {
-    return Card(
-      child: ListTile(
-        title: Text(title),
-        trailing: Text(value),
       ),
     );
   }

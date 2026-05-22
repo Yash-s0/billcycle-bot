@@ -33,6 +33,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
 
     expect(find.text('HDFC/Regalia'), findsOneWidget);
-    expect(find.textContaining('Billing day 10'), findsOneWidget);
+    expect(find.text('Billing day'), findsOneWidget);
+    expect(find.text('10'), findsOneWidget);
   });
 }

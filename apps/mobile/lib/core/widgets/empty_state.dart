@@ -22,7 +22,12 @@ class EmptyState extends StatelessWidget {
           children: <Widget>[
             Text(title, style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
-            Text(subtitle, textAlign: TextAlign.center),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              softWrap: true,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
             if (action != null) ...<Widget>[
               const SizedBox(height: 16),
               action!,

@@ -5,6 +5,7 @@ import '../../../core/contracts/providers.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/async_value_view.dart';
 import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/ui_primitives.dart';
 import '../../reminders/application/reminders_providers.dart';
 import '../domain/notification_event.dart';
 
@@ -33,12 +34,33 @@ class NotificationsScreen extends ConsumerWidget {
               final NotificationEvent item = value[index];
               return Card(
                 child: ListTile(
-                  title: Text(item.title),
-                  subtitle: Text('${item.body}\n${formatDate(item.createdAt)}'),
+                  title: Text(
+                    item.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          item.body,
+                          maxLines: 4,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          formatDate(item.createdAt),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
                   isThreeLine: true,
                   trailing: item.isRead
-                      ? const Icon(Icons.mark_email_read_outlined)
-                      : const Icon(Icons.mark_email_unread_outlined),
+                      ? const UiStatusPill(label: 'Read')
+                      : const UiStatusPill(label: 'New'),
                   onTap: () async {
                     if (!item.isRead) {
                       await ref.read(remindersRepositoryProvider).markNotificationRead(item.id);

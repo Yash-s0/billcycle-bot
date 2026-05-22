@@ -26,6 +26,7 @@ class MainShellScaffold extends StatelessWidget {
       body: child,
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
+        height: 72,
         destinations: const <NavigationDestination>[
           NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.receipt_long_outlined), label: 'Transactions'),
